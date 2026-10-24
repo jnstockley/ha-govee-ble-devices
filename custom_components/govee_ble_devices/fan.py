@@ -12,8 +12,8 @@ from .coordinator import GoveeBLECoordinator
 from .entity import GoveeBLEEntity
 
 PRESETS = {
-    "H7102": ("normal", "sleep", "nature"),
-    "H7126": ("sleep", "low", "high", "custom"),
+    "H7102": ("Normal", "Sleep", "Nature"),
+    "H7126": ("Sleep", "Low", "High", "Custom"),
 }
 
 
@@ -55,7 +55,7 @@ class GoveeBLEFan(GoveeBLEEntity, FanEntity):
         if not self.coordinator.fresh(key):
             return None
         mode = (self.coordinator.data or {}).get(key)
-        return mode.value if mode is not None else None
+        return mode.value.title() if mode is not None else None
 
     @property
     def percentage(self) -> int | None:
@@ -79,14 +79,23 @@ class GoveeBLEFan(GoveeBLEEntity, FanEntity):
         if percentage == 0:
             await self.async_turn_off()
             return
+        if (
+            self.is_on
+            and self.coordinator.fresh("power_state")
+            and percentage is None
+            and preset_mode is None
+        ):
+            return
         commands: list[tuple[str, tuple[object, ...]]] = [("turn_on", ())]
         if preset_mode is not None:
             if preset_mode not in self.preset_modes:
                 raise ValueError("Unsupported preset mode")
             if self.coordinator.model == "H7102":
-                commands.append(("set_work_mode", (H7102WorkMode(preset_mode),)))
+                commands.append(
+                    ("set_work_mode", (H7102WorkMode(preset_mode.lower()),))
+                )
             else:
-                commands.append((f"set_{preset_mode}_mode", ()))
+                commands.append((f"set_{preset_mode.lower()}_mode", ()))
         if percentage is not None and self.coordinator.model == "H7102":
             commands.append(
                 ("set_fan_speed", (max(1, min(8, round(percentage * 8 / 100))),))
@@ -99,19 +108,26 @@ class GoveeBLEFan(GoveeBLEEntity, FanEntity):
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         if preset_mode not in self.preset_modes:
             raise ValueError("Unsupported preset mode")
+        if self.is_on is not True or not self.coordinator.fresh("power_state"):
+            await self.async_turn_on(preset_mode=preset_mode)
+            return
         if self.coordinator.model == "H7102":
             await self.coordinator.async_command(
-                "set_work_mode", H7102WorkMode(preset_mode)
+                "set_work_mode", H7102WorkMode(preset_mode.lower())
             )
         else:
-            await self.coordinator.async_command(f"set_{preset_mode}_mode")
+            await self.coordinator.async_command(f"set_{preset_mode.lower()}_mode")
 
     async def async_set_percentage(self, percentage: int) -> None:
         if percentage == 0:
             await self.async_turn_off()
             return
         speed = round(percentage * 8 / 100)
-        await self.coordinator.async_command("set_fan_speed", max(1, min(8, speed)))
+        commands: list[tuple[str, tuple[object, ...]]] = []
+        if self.is_on is not True or not self.coordinator.fresh("power_state"):
+            commands.append(("turn_on", ()))
+        commands.append(("set_fan_speed", (max(1, min(8, speed)),)))
+        await self.coordinator.async_commands(commands)
 
     async def async_oscillate(self, oscillating: bool) -> None:
         await self.coordinator.async_command("set_oscillation", oscillating)

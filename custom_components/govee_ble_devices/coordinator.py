@@ -31,6 +31,7 @@ from .const import CONF_MODEL
 _LOGGER = logging.getLogger(__name__)
 POLL_INTERVAL = timedelta(seconds=90)
 MAX_AGE = 300.0
+COMMAND_VERIFY_DELAY = 1.0
 
 
 class RetryGattConnection(GattConnection):
@@ -62,6 +63,7 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.model: str = entry.data[CONF_MODEL]
         self._lock = asyncio.Lock()
         self._seen: dict[str, float] = {}
+        self._verify_generation = 0
 
     def fresh(self, key: str) -> bool:
         """Whether a field was decoded from a recent valid reply."""
@@ -142,6 +144,13 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ):
             await client.request_state()
             deadline = monotonic() + 4
+            state_keys = (
+                "power_state",
+                "work_mode",
+                "fan_speed",
+                "display_state",
+                "oscillation_state",
+            )
             while (remaining := deadline - monotonic()) > 0:
                 try:
                     await client.receive(timeout=min(remaining, 0.8))
@@ -152,14 +161,10 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "Ignored invalid H7102 notification from %s", self.address
                     )
                     continue
+                if all(getattr(client.state, key) is not None for key in state_keys):
+                    break
             state = client.state
-            for key in (
-                "power_state",
-                "work_mode",
-                "fan_speed",
-                "display_state",
-                "oscillation_state",
-            ):
+            for key in state_keys:
                 if (value := getattr(state, key)) is not None:
                     values[key] = value
         return values
@@ -201,13 +206,24 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.async_commands([(command, args)])
 
     async def async_commands(self, commands: list[tuple[str, tuple[Any, ...]]]) -> None:
-        """Send related commands in one session and then refresh state."""
+        """Send related commands and verify their state after a short delay."""
         async with self._lock:
             try:
+                started = monotonic()
                 device = self._device()
                 async with RetryGattConnection(device, timeout=12) as connection:
+                    _LOGGER.debug(
+                        "BLE connection to %s established in %.2f seconds",
+                        self.address,
+                        monotonic() - started,
+                    )
                     if self.model == "H7102":
                         async with H7102Client(connection) as client:
+                            _LOGGER.debug(
+                                "H7102 session with %s established in %.2f seconds",
+                                self.address,
+                                monotonic() - started,
+                            )
                             for index, (command, args) in enumerate(commands):
                                 if index:
                                     await asyncio.sleep(0.1)
@@ -220,6 +236,11 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             await getattr(profile, command)(connection, *args)
                     else:
                         raise ValueError("This device has no controls")
+                _LOGGER.debug(
+                    "BLE commands for %s completed in %.2f seconds",
+                    self.address,
+                    monotonic() - started,
+                )
             except (
                 BleakError,
                 GoveeBLEError,
@@ -228,4 +249,44 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ValueError,
             ) as err:
                 raise UpdateFailed("Could not send Govee BLE command") from err
-        await self.async_request_refresh()
+            updates = self._command_updates(commands)
+            if updates:
+                self._seen.update({key: monotonic() for key in updates})
+                self.async_set_updated_data({**(self.data or {}), **updates})
+            self._verify_generation += 1
+            generation = self._verify_generation
+            self.config_entry.async_create_background_task(
+                self.hass,
+                self._verify_command(generation),
+                name=f"{self.name} verify command",
+            )
+
+    def _command_updates(
+        self, commands: list[tuple[str, tuple[Any, ...]]]
+    ) -> dict[str, Any]:
+        """Project values accepted by the device while readback is pending."""
+        updates: dict[str, Any] = {}
+        for command, args in commands:
+            if command == "turn_on":
+                updates["power_state"] = True
+            elif command == "turn_off":
+                updates["power_state"] = False
+            elif command == "set_fan_speed":
+                updates["fan_speed"] = args[0]
+            elif command == "set_work_mode":
+                updates["work_mode"] = args[0]
+            elif command == "set_oscillation":
+                updates["oscillation_state"] = args[0]
+            elif command == "set_panel_display":
+                updates["display_state"] = args[0]
+            elif command.startswith("set_") and command.endswith("_mode"):
+                updates["mode"] = H7126Mode(
+                    command.removeprefix("set_").removesuffix("_mode")
+                )
+        return updates
+
+    async def _verify_command(self, generation: int) -> None:
+        """Coalesce nearby writes into one device readback."""
+        await asyncio.sleep(COMMAND_VERIFY_DELAY)
+        if generation == self._verify_generation:
+            await self.async_refresh()
