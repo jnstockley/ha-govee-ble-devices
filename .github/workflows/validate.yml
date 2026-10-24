@@ -19,15 +19,17 @@ jobs:
         with:
           python-version: "3.14"
       - name: Install tooling
-        run: python -m pip install ruff==0.17.2
+        run: python -m pip install -r requirements-test.txt
       - name: Check Python style
         run: |
-          ruff check custom_components scripts
-          ruff format --check custom_components scripts
+          ruff check custom_components scripts tests
+          ruff format --check custom_components scripts tests
       - name: Check syntax
-        run: python -m compileall -q custom_components scripts
+        run: python -m compileall -q custom_components scripts tests
       - name: Validate HACS release files and PyPI dependency
         run: python scripts/check_release.py --install-requirement
+      - name: Test offline BLE transactions
+        run: python -m pytest -q
       - name: Check tag against integration version
         if: startsWith(github.ref, 'refs/tags/')
         run: python scripts/check_release.py --tag "$GITHUB_REF_NAME"

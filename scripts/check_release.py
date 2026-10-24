@@ -73,7 +73,14 @@ def validate(tag: str | None = None, install_requirement: bool = False) -> str:
             [
                 sys.executable,
                 "-c",
-                "from govee_ble_client import H5179Profile, H7102Client, H7126Profile",
+                (
+                    "from govee_ble_client import "
+                    "ConnectionStrategy, GattConnection, H5179Profile, H7102Client, "
+                    "H7102Profile, H7126Profile; "
+                    "from inspect import signature; "
+                    "assert {'connector', 'device_resolver', 'services'} "
+                    "<= signature(GattConnection).parameters.keys()"
+                ),
             ],
             check=True,
         )

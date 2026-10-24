@@ -10,7 +10,7 @@ A local Bluetooth custom integration using [`govee-ble-client`](https://github.c
 | H7102 tower fan | Fan power, Normal/Sleep/Nature presets, speeds 1–8, oscillation, display switch |
 | H7126 air purifier | Fan power, Sleep/Low/High/Custom presets, display switch, filter life sensor, filter reset button |
 
-H7126 Custom mode selects the schedule already stored on the device. Editing the schedule is not exposed. H7102 Custom mode is also omitted because its settings contain fields that are not fully mapped in the client.
+H7126 Custom mode reads and reapplies the schedule already stored on the device. If its marker, modes, or durations cannot be preserved by the client's writer, the action fails before sending controls. Editing the schedule is not exposed. H7102 Custom mode is also omitted because its settings contain fields that are not fully mapped in the client.
 
 ## Install
 
@@ -19,19 +19,63 @@ H7126 Custom mode selects the schedule already stored on the device. Editing the
 3. Open **Govee BLE Devices** in HACS and select **Download**. For prerelease versions, enable prereleases for this repository or select the version explicitly. Restart Home Assistant after the download.
 4. In **Settings → Devices & services → Add integration**, search for **Govee BLE Devices** and select a discovered device. Repeat for each additional device, including devices of the same model.
 
-The device must be advertising within range of a Home Assistant Bluetooth adapter or a connectable Bluetooth proxy. Passive-only proxies cannot establish the GATT connections these models require. Home Assistant must be able to install `govee-ble-client==1.0.0b2` from PyPI.
+The device must be advertising within range of a Home Assistant Bluetooth adapter or a connectable Bluetooth proxy. Passive-only proxies cannot establish the GATT connections these models require. Home Assistant must be able to install `govee-ble-client==1.0.0b3` from PyPI.
 
 HACS tracks the repository and exposes an update entity in Home Assistant. When a newer release is available, install it through the HACS update entity or HACS dashboard, then restart Home Assistant to load the new Python code. Prerelease updates are shown when prereleases are enabled for this repository. HACS handles future integration file downloads; no manual copying is needed. [HACS update entity documentation](https://www.hacs.xyz/docs/use/entities/update/)
 
 ## Data and availability
 
-The integration polls every 90 seconds using short-lived connections. Connection establishment uses Home Assistant's BLE retry connector, including for control commands. Invalid notification frames are ignored. A failed poll marks the device's entities unavailable; individual fields also become unavailable when they have not received a valid update for five minutes. The last valid values are kept internally so a brief malformed or incomplete response cannot replace good data. Commands are serialized with polling; successful writes update the displayed state promptly and trigger a delayed readback to verify the device state.
+The integration polls every 90 seconds using brief connections, freeing adapter/proxy slots between transactions. Home Assistant owns discovery, adapter routing, and connection admission. Each session resolves a fresh connectable device and uses Home Assistant's BLE retry connector through the client's public connection API, with model service filtering, a 45-second overall GATT setup budget, and 10-second operation/cleanup budgets. H7102 encryption has a separate eight-second handshake budget. Cleanup can extend elapsed time beyond a setup or response deadline.
+
+Query writes and response collection share a four-second budget after setup. Complete reads return as soon as the expected fields arrive; missing fields can use the remaining budget. Invalid frames are ignored, duplicate replies do not complete a snapshot, and plain-device notification buffers are capped at 64 frames. Overflow or disconnect fails the transaction. H7126 saved gear replies establish active mode only when the mode-category reply confirms gear mode.
+
+ATT write modes are explicit: H7126 and encrypted H7102 use write-without-response; H5179 retains response writes when its current characteristic supports them, otherwise write-without-response. Existing profile validation checks the connected GATT layout before queries or controls.
+
+A failed poll marks the device's entities unavailable; individual fields also become unavailable when they have not received a valid update for five minutes. The last valid values are kept internally so a malformed or incomplete response cannot replace good data. Only received observations refresh field timestamps. Commands are serialized with polling per device; separate devices can progress independently. Completed control writes update displayed values provisionally and trigger one coalesced readback after a one-second delay. A write does not restore availability or confirm an applied setting. Ambiguous write failures also schedule readback; controls are never replayed automatically. Unload cancels and awaits active and queued operations, then closes encryption and GATT. Failed cleanup handles are retained for retry before another session or during unload. Failed initial setup also retains its cleanup owner across Home Assistant setup retries.
+
+These choices follow the beta's [application guide](https://github.com/jnstockley/govee_ble_client/blob/v1.0.0b3/docs/APP_INTEGRATION.md) and [BLE review](https://github.com/jnstockley/govee_ble_client/blob/v1.0.0b3/docs/BLE_BEST_PRACTICES.md). Brief sessions conserve slots but require another connection and, for H7102, another handshake for each transaction. Persistent sessions and shorter pacing require measurements on the target adapters before adoption.
+
+Enable debug logging from the integration's Home Assistant device/service page, or configure:
+
+```yaml
+logger:
+  logs:
+    custom_components.govee_ble_devices: debug
+    govee_ble_client: debug
+```
+
+The manifest declares the library logger so Home Assistant's integration debug controls include it. Integration DEBUG records separate GATT setup, encrypted setup, and response-collection durations. Return logging to normal after diagnosis. The integration's timing messages omit addresses and packet data; Home Assistant and backend exception logs may still include identifying information.
 
 Some device firmware may respond slowly or differ from the captured profiles. Report the model, firmware, affected entity, and redacted debug logs when opening an issue. Bluetooth addresses and raw packet bytes can identify a device, so redact them before sharing.
 
 ## Development
 
-The integration is pure Python under `custom_components/govee_ble_devices`. Run `python scripts/check_release.py`, `python -m compileall -q custom_components`, and `ruff check custom_components scripts` before pushing. CI also verifies that the pinned PyPI dependency can be installed, runs hassfest and HACS validation, and checks code formatting. Live behavior requires supported BLE hardware and a Home Assistant instance.
+The integration is pure Python under `custom_components/govee_ble_devices`. With Python 3.14 in a virtual environment, install `python -m pip install -r requirements-test.txt`, then run:
+
+```sh
+python scripts/check_release.py --install-requirement
+python -m pytest -q
+python -m compileall -q custom_components scripts tests
+ruff check custom_components scripts tests
+ruff format --check custom_components scripts tests
+```
+
+Offline tests use the published client and Home Assistant coordinator, replacing radio I/O and the encrypted wire transport with controlled doubles. They cover lifecycle, bounded replies, partial state, saved Custom settings, uncertain writes, readback, and unload. CI also runs hassfest and HACS validation. The test environment pins Home Assistant 2026.10.3 and its Bluetooth import dependencies; update those pins together when changing the compatibility target.
+
+### Hardware validation before deployment
+
+Offline tests cannot establish RF latency, battery life, proxy compatibility, or firmware behavior. On a Linux/BlueZ host and an active Bluetooth proxy, test mixed supported models and include:
+
+| Scenario | Check |
+| --- | --- |
+| Cold discovery and simultaneous startup | Devices eventually connect without a competing scanner; one slow device does not block other coordinators |
+| Proxy slot exhaustion | Other devices recover as slots become available; brief sessions release their slots |
+| Device loss and adapter failover | Entities become unavailable, recover on later polls, and use fresh HA device routing |
+| Repeated controls and readback | Observed settings replace provisional values; uncertain controls are not replayed |
+| Unload during setup or writes | No surviving verification/receiver tasks or occupied connection slots |
+| Long-duration sensor run | Five-minute field freshness and acceptable battery behavior |
+
+Record GATT setup, encrypted setup, and query-to-matching-reply p50/p95 separately, along with failure/recovery counts, notification overflows, and remaining tasks/slots after unload. Repeat representative checks on the deployed x86 or ARM64 host. This change has no hardware certification implied by its offline tests.
 
 ### Dependency updates
 
