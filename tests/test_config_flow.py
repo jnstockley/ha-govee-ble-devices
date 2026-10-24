@@ -1,15 +1,75 @@
 """Device selection must only offer supported devices that can be added."""
 
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 from bleak.backends.device import BLEDevice
 from homeassistant.components import bluetooth
+from homeassistant.components.bluetooth.match import ble_device_matches
 from homeassistant.config_entries import ConfigEntries, ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from custom_components.govee_ble_devices.config_flow import GoveeBLEConfigFlow
 from custom_components.govee_ble_devices.const import DOMAIN
+
+
+@pytest.mark.parametrize(
+    "broadcast_name",
+    [
+        "Govee_H5179_ABCD",
+        "GV5179_ABCD",
+        "GVH5179_ABCD",
+        "GVH7102_ABCD",
+        "GVH7126_ABCD",
+        "H5179_ABCD",
+        "H7102_ABCD",
+        "H7126_ABCD",
+        "ihoment_H7102_ABCD",
+        "ihoment_H7126_ABCD",
+    ],
+)
+async def test_advertised_names_trigger_automatic_discovery(flow, broadcast_name):
+    manifest = json.loads(
+        (
+            Path(__file__).parents[1] / "custom_components" / DOMAIN / "manifest.json"
+        ).read_text()
+    )
+    info = advertisement("AA:BB:CC:DD:EE:01", name=broadcast_name)
+
+    assert any(ble_device_matches(matcher, info) for matcher in manifest["bluetooth"])
+
+    flow.context = {"source": "bluetooth"}
+    result = await flow.async_step_bluetooth(info)
+
+    assert result["type"] == "form"
+    assert result["step_id"] == "confirm"
+
+
+@pytest.mark.parametrize(
+    ("broadcast_name", "connectable"),
+    [
+        ("ihoment_H9999_ABCD", True),
+        ("ihoment_H7102_ABCD", False),
+        ("ihoment_H7126_ABCD", False),
+    ],
+)
+def test_automatic_discovery_rejects_unrelated_or_nonconnectable_ihoment_devices(
+    broadcast_name, connectable
+):
+    manifest = json.loads(
+        (
+            Path(__file__).parents[1] / "custom_components" / DOMAIN / "manifest.json"
+        ).read_text()
+    )
+    info = advertisement(
+        "AA:BB:CC:DD:EE:01", name=broadcast_name, connectable=connectable
+    )
+
+    assert not any(
+        ble_device_matches(matcher, info) for matcher in manifest["bluetooth"]
+    )
 
 
 @pytest.fixture

@@ -9,7 +9,9 @@
     {"local_name": "GVH7126*", "connectable": true},
     {"local_name": "H5179*", "connectable": true},
     {"local_name": "H7102*", "connectable": true},
-    {"local_name": "H7126*", "connectable": true}
+    {"local_name": "H7126*", "connectable": true},
+    {"local_name": "ihoment_H7102*", "connectable": true},
+    {"local_name": "ihoment_H7126*", "connectable": true}
   ],
   "codeowners": ["@jnstockley"],
   "config_flow": true,
