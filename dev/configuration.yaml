@@ -1,0 +1,19 @@
+# Seed configuration for the isolated local development instance.
+homeassistant:
+  name: Govee BLE Development
+  time_zone: America/Chicago
+
+http:
+  server_host: 127.0.0.1
+  server_port: 8123
+
+# Keep the UI, integration management, history, and local Bluetooth available
+# without enabling unrelated default integrations or discovering LAN proxies.
+frontend:
+config:
+api:
+websocket_api:
+history:
+bluetooth:
+logger:
+  default: info

@@ -62,6 +62,57 @@ ruff format --check custom_components scripts tests
 
 Offline tests use the published client and Home Assistant coordinator, replacing radio I/O and the encrypted wire transport with controlled doubles. They cover lifecycle, bounded replies, partial state, saved Custom settings, uncertain writes, readback, and unload. CI also runs hassfest and HACS validation. The test environment pins Home Assistant 2026.10.3 and its Bluetooth import dependencies; update those pins together when changing the compatibility target.
 
+### Local Home Assistant on macOS
+
+Run a separate development instance using the Mac's Bluetooth adapter. This follows Home Assistant's [manual development environment guidance](https://contributors.home-assistant.io/core/development/environment/), using the same Home Assistant version as the offline tests. HACS is not needed: the instance loads the integration directly from this checkout.
+
+Install the native media libraries used by Home Assistant's frontend dependencies with [Homebrew](https://brew.sh/):
+
+```sh
+brew install ffmpeg jpeg-turbo
+```
+
+Then, from the repository root, with `python3` pointing to Python 3.14:
+
+```sh
+python3 --version
+python3 -m venv .venv-ha
+.venv-ha/bin/python -m pip install -r requirements-test.txt
+.venv-ha/bin/python scripts/check_release.py --install-requirement
+mkdir -p .ha-dev/custom_components
+cp -n dev/configuration.yaml .ha-dev/configuration.yaml
+ln -s ../../custom_components/govee_ble_devices .ha-dev/custom_components/govee_ble_devices
+```
+
+The `ln` command is a one-time setup step; an existing link does not need replacing. The existing `.venv/` is independent of this environment. `.venv-ha/` and `.ha-dev/` are ignored by Git; the latter holds local credentials, configuration, logs, and the database. Keep it private. `dev/configuration.yaml` is the tracked seed; edit `.ha-dev/configuration.yaml` for local settings.
+
+Check configuration and start Home Assistant:
+
+```sh
+.venv-ha/bin/hass --script check_config -c .ha-dev
+.venv-ha/bin/hass -c .ha-dev
+```
+
+The first run downloads additional requirements for the enabled Home Assistant integrations and needs internet access. Open **http://localhost:8123**, create a local owner account, then go to **Settings → Devices & services → Add integration → Govee BLE Devices**. Choose a supported device within Bluetooth range of the Mac. With no device in range, the integration reports that no devices were found; it does not create simulated entities. The web server listens only on `127.0.0.1:8123`. The seed enables the frontend, integration configuration, API, history, and Bluetooth, without unrelated default integrations or automatic LAN proxy discovery.
+
+Allow Bluetooth access if macOS prompts. If startup exits with `SIGKILL` or scanning fails, check **System Settings → Privacy & Security → Bluetooth** for the app launching Python (such as Terminal or your editor), enable access, and restart from that app. Home Assistant documents this macOS permission requirement in its development guide.
+
+Stop with **Ctrl+C**. After changing Python code, stop and run the same start command again; the symlink loads the working source without copying files or publishing a release. Restart after manifest changes as well so Home Assistant can install changed requirements. When the repository's test pins change, rerun the dependency installation and release validation commands.
+
+Do not add production ESPHome Bluetooth proxies to the development instance: their Bluetooth subscription serves one client, and another subscriber can interrupt production. See the [ESPHome proxy implementation](https://api-docs.esphome.io/bluetooth__proxy_8cpp_source). Even with separate adapters, two Home Assistant instances polling the same Govee device can compete for connections. Use a spare device, or temporarily disable that device's integration entry in production while testing, then re-enable it afterward.
+
+Run the offline checks with this environment:
+
+```sh
+.venv-ha/bin/python scripts/check_release.py --install-requirement
+.venv-ha/bin/python -m pytest -q
+.venv-ha/bin/python -m compileall -q custom_components scripts tests
+.venv-ha/bin/ruff check custom_components scripts tests
+.venv-ha/bin/ruff format --check custom_components scripts tests
+```
+
+The local instance verifies UI/setup and Mac Bluetooth behavior. Also perform the Linux/BlueZ and active-proxy hardware checks below before a release that changes Bluetooth behavior.
+
 ### Hardware validation before deployment
 
 Offline tests cannot establish RF latency, battery life, proxy compatibility, or firmware behavior. On a Linux/BlueZ host and an active Bluetooth proxy, test mixed supported models and include:
