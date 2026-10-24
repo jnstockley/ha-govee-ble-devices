@@ -1,0 +1,14 @@
+{
+  "extends": [
+    "config:recommended",
+    "abandonments:recommended"
+  ],
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "assignees": [
+    "jnstockley"
+  ],
+  "homeassistant-manifest": {
+    "enabled": true
+  },
+  "prConcurrentLimit": 0
+}

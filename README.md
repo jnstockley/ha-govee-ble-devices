@@ -33,6 +33,10 @@ Some device firmware may respond slowly or differ from the captured profiles. Re
 
 The integration is pure Python under `custom_components/govee_ble_devices`. Run `python scripts/check_release.py`, `python -m compileall -q custom_components`, and `ruff check custom_components scripts` before pushing. CI also verifies that the pinned PyPI dependency can be installed, runs hassfest and HACS validation, and checks code formatting. Live behavior requires supported BLE hardware and a Home Assistant instance.
 
+### Dependency updates
+
+[Renovate](https://github.com/apps/renovate) is configured in `renovate.json`. Install or enable the Renovate GitHub App for this repository after merging the configuration to the default branch. It opens dependency update pull requests for GitHub Actions and the Python packages in `custom_components/govee_ble_devices/manifest.json`'s `requirements` array, using its built-in [Home Assistant manifest manager](https://docs.renovatebot.com/modules/manager/homeassistant-manifest/). Review and merge these pull requests through the existing validation workflow, then follow the release steps below.
+
 ### Publishing an update
 
 1. Update `version` in `custom_components/govee_ble_devices/manifest.json` and the changelog or release notes. If the client version changes, update its pinned `requirements` entry and the installation note above.
