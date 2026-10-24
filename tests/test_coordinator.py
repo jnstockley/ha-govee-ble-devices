@@ -531,3 +531,41 @@ async def test_successful_retry_survives_disconnect_from_failed_attempt(
         await H5179Profile().request_battery(connection)
         attempts[-1].lose_link()
         assert not connection.is_connected  # Post-handoff disconnect still propagates.
+
+
+async def test_purifier_control_reaches_radio_before_disconnect(
+    coordinator, radio, monkeypatch
+):
+    """A no-response backend can return before the final frame goes on air."""
+    coordinator.model = "H7126"
+    applied = []
+
+    def submit(client, data):
+        def transmit():
+            if client.is_connected:
+                applied.append(data)
+
+        asyncio.get_running_loop().call_later(0.05, transmit)
+
+    use_replies(monkeypatch, radio, submit, purifier=True)
+    await coordinator.async_commands([("turn_on", ()), ("set_low_mode", ())])
+    await asyncio.sleep(0.06)
+    assert [frame[:4] for frame in applied] == [
+        b"\x33\x01\x01\x00",
+        b"\x3a\x05\x01\x02",
+    ]
+    assert not radio.clients[0].is_connected
+
+
+async def test_shutdown_cancels_purifier_control_while_radio_is_settling(
+    coordinator, radio, monkeypatch
+):
+    coordinator.model = "H7126"
+    submitted = asyncio.Event()
+    use_replies(monkeypatch, radio, lambda *_: submitted.set(), purifier=True)
+    command = asyncio.create_task(coordinator.async_command("turn_off"))
+    await submitted.wait()
+    await coordinator.async_shutdown()
+    assert command.cancelled()
+    assert not radio.clients[0].is_connected
+    assert coordinator._verify_task is None

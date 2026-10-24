@@ -37,6 +37,7 @@ _LOGGER = logging.getLogger(__name__)
 POLL_INTERVAL = timedelta(seconds=90)
 MAX_AGE = 300.0
 COMMAND_VERIFY_DELAY = 1.0
+H7126_COMMAND_SETTLE_DELAY = 0.3
 RESPONSE_TIMEOUT = 4.0
 
 
@@ -398,6 +399,11 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 await profile.set_custom_schedule(connection, custom)
                             else:
                                 await getattr(profile, command)(connection, *args)
+                        # Write-without-response completion can mean only queued
+                        # locally. Immediate Core Bluetooth teardown drops the
+                        # final control; allow it to transmit before disconnect.
+                        # This is not confirmation: readback still owns truth.
+                        await asyncio.sleep(H7126_COMMAND_SETTLE_DELAY)
                     else:
                         raise ValueError("This device has no controls")
             except (
