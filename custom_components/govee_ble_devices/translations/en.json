@@ -1,0 +1,32 @@
+{
+  "config": {
+    "flow_title": "Govee BLE Devices: {name}",
+    "step": {
+      "user": {
+        "title": "Select a Govee BLE device",
+        "data": {"address": "Device"}
+      },
+      "confirm": {
+        "title": "Add {name}?",
+        "description": "This device will be added using the local Bluetooth adapter."
+      }
+    },
+    "error": {"device_missing": "The device is no longer available. Try again."},
+    "abort": {
+      "already_configured": "This device is already configured.",
+      "no_devices_found": "No supported Govee BLE devices were found. Make sure the device is nearby and a connectable Bluetooth adapter is available.",
+      "not_supported": "This Bluetooth device is not supported."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "temperature": {"name": "Temperature"},
+      "humidity": {"name": "Humidity"},
+      "battery": {"name": "Battery"},
+      "filter_life": {"name": "Filter life"}
+    },
+    "fan": {"fan": {"name": null}},
+    "switch": {"display": {"name": "Display"}},
+    "button": {"reset_filter": {"name": "Reset filter life"}}
+  }
+}
