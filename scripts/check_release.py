@@ -42,6 +42,12 @@ def validate(tag: str | None = None, install_requirement: bool = False) -> str:
         raise ValueError("Python DOMAIN does not match the manifest")
     if not manifest.get("issue_tracker") or not manifest.get("codeowners"):
         raise ValueError("HACS requires an issue tracker and a code owner")
+    for matcher in manifest.get("bluetooth", []):
+        local_name = matcher.get("local_name", "")
+        if any(char in local_name[:3] for char in "*?["):
+            raise ValueError(
+                f"Bluetooth local_name matcher starts with a pattern: {local_name}"
+            )
     if not hacs.get("name"):
         raise ValueError("hacs.json needs a name")
     if hacs["name"] != manifest["name"]:

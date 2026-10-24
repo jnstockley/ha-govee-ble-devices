@@ -2,9 +2,14 @@
   "domain": "govee_ble_devices",
   "name": "Govee BLE Devices",
   "bluetooth": [
-    {"local_name": "*H5179*", "connectable": true},
-    {"local_name": "*H7102*", "connectable": true},
-    {"local_name": "*H7126*", "connectable": true}
+    {"local_name": "Govee*", "connectable": true},
+    {"local_name": "GV5179*", "connectable": true},
+    {"local_name": "GVH5179*", "connectable": true},
+    {"local_name": "GVH7102*", "connectable": true},
+    {"local_name": "GVH7126*", "connectable": true},
+    {"local_name": "H5179*", "connectable": true},
+    {"local_name": "H7102*", "connectable": true},
+    {"local_name": "H7126*", "connectable": true}
   ],
   "codeowners": ["@jnstockley"],
   "config_flow": true,
@@ -14,5 +19,5 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/jnstockley/ha-govee-ble-devices/issues",
   "requirements": ["govee-ble-client==1.0.0b2"],
-  "version": "1.0.0b1"
+  "version": "1.0.0b2"
 }

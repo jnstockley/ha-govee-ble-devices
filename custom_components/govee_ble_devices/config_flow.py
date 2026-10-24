@@ -18,6 +18,8 @@ from .const import CONF_MODEL, DOMAIN, SUPPORTED_MODELS
 def model_from_name(name: str | None) -> str | None:
     """Only offer models with a verified client profile."""
     value = (name or "").upper()
+    if "GV5179" in value:
+        return "H5179"
     return next((model for model in SUPPORTED_MODELS if model in value), None)
 
 
