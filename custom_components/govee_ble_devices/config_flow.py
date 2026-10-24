@@ -14,6 +14,12 @@ from homeassistant.helpers.selector import (
 
 from .const import CONF_MODEL, DOMAIN, SUPPORTED_MODELS
 
+MODEL_NAMES = {
+    "H5179": "Govee Temperature & Humidity Sensor (H5179)",
+    "H7102": "Govee Tower Fan (H7102)",
+    "H7126": "Govee Air Purifier (H7126)",
+}
+
 
 def model_from_name(name: str | None) -> str | None:
     """Only offer models with a verified client profile."""
@@ -21,6 +27,12 @@ def model_from_name(name: str | None) -> str | None:
     if "GV5179" in value:
         return "H5179"
     return next((model for model in SUPPORTED_MODELS if model in value), None)
+
+
+def friendly_name(name: str | None) -> str:
+    """Describe the model instead of its Bluetooth broadcast name."""
+    model = model_from_name(name)
+    return MODEL_NAMES[model] if model else name or "Govee device"
 
 
 class GoveeBLEConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -41,7 +53,9 @@ class GoveeBLEConfigFlow(ConfigFlow, domain=DOMAIN):
         await self.async_set_unique_id(discovery_info.address.upper())
         self._abort_if_unique_id_configured()
         self._discovery = discovery_info
-        self.context["title_placeholders"] = {"name": discovery_info.name or model}
+        self.context["title_placeholders"] = {
+            "name": friendly_name(discovery_info.name)
+        }
         return await self.async_step_confirm()
 
     async def async_step_confirm(
@@ -58,17 +72,24 @@ class GoveeBLEConfigFlow(ConfigFlow, domain=DOMAIN):
             )
         return self.async_show_form(
             step_id="confirm",
-            description_placeholders={"name": self._discovery.name or "Govee device"},
+            description_placeholders={"name": friendly_name(self._discovery.name)},
         )
 
     async def async_step_user(self, user_input: dict | None = None) -> ConfigFlowResult:
         """Pick a device from Home Assistant's shared Bluetooth scanner."""
 
         def discovered() -> dict[str, bluetooth.BluetoothServiceInfoBleak]:
+            configured = {
+                unique_id.upper()
+                for unique_id in self._async_current_ids(include_ignore=False)
+                if unique_id is not None
+            }
             return {
                 info.address: info
                 for info in bluetooth.async_discovered_service_info(self.hass)
-                if info.connectable and model_from_name(info.name)
+                if info.connectable
+                and model_from_name(info.name)
+                and info.address.upper() not in configured
             }
 
         devices = discovered()
@@ -92,7 +113,9 @@ class GoveeBLEConfigFlow(ConfigFlow, domain=DOMAIN):
     @staticmethod
     def _schema(devices: dict[str, bluetooth.BluetoothServiceInfoBleak]) -> vol.Schema:
         options = [
-            SelectOptionDict(value=address, label=f"{info.name} ({address})")
+            SelectOptionDict(
+                value=address, label=f"{friendly_name(info.name)} ({address})"
+            )
             for address, info in sorted(devices.items())
         ]
         return vol.Schema(

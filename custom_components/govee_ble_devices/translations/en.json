@@ -14,7 +14,7 @@
     "error": {"device_missing": "The device is no longer available. Try again."},
     "abort": {
       "already_configured": "This device is already configured.",
-      "no_devices_found": "No supported Govee BLE devices were found. Make sure the device is nearby and a connectable Bluetooth adapter is available.",
+      "no_devices_found": "No new supported Govee BLE devices were found. Devices already added are hidden. Make sure any new device is nearby and a connectable Bluetooth adapter is available.",
       "not_supported": "This Bluetooth device is not supported."
     }
   },
