@@ -99,7 +99,24 @@ The first run downloads additional requirements for the enabled Home Assistant i
 
 Allow Bluetooth access if macOS prompts. If startup exits with `SIGKILL` or scanning fails, check **System Settings → Privacy & Security → Bluetooth** for the app launching Python (such as Terminal or your editor), enable access, and restart from that app. Home Assistant documents this macOS permission requirement in its development guide.
 
-Stop with **Ctrl+C**. After changing Python code, stop and run the same start command again; the symlink loads the working source without copying files or publishing a release. Restart after manifest changes as well so Home Assistant can install changed requirements. When the repository's test pins change, rerun the dependency installation and release validation commands.
+To stop the development server, press **Ctrl+C** in the terminal running Home Assistant and wait for shutdown to finish.
+
+If it is running in the background or that terminal is unavailable, find the process listening on the development port from another terminal:
+
+```sh
+lsof -nP -iTCP:8123 -sTCP:LISTEN
+```
+
+Use the PID from that output in the commands below, replacing `12345` with the actual PID. Check that the command belongs to this checkout's `.venv-ha/bin/hass -c .ha-dev` instance before stopping it:
+
+```sh
+ps -p 12345 -o command=
+kill -TERM 12345
+```
+
+`SIGTERM` requests a graceful shutdown, allowing Home Assistant to close Bluetooth connections and its database. Wait for shutdown to finish; rerun the `lsof` command to confirm nothing is listening on port 8123.
+
+After changing Python code, stop and run the same start command again; the symlink loads the working source without copying files or publishing a release. Restart after manifest changes as well so Home Assistant can install changed requirements. When the repository's test pins change, rerun the dependency installation and release validation commands.
 
 Do not add production ESPHome Bluetooth proxies to the development instance: their Bluetooth subscription serves one client, and another subscriber can interrupt production. See the [ESPHome proxy implementation](https://api-docs.esphome.io/bluetooth__proxy_8cpp_source). Even with separate adapters, two Home Assistant instances polling the same Govee device can compete for connections. Use a spare device, or temporarily disable that device's integration entry in production while testing, then re-enable it afterward.
 
