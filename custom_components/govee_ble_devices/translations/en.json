@@ -25,7 +25,7 @@
       "battery": {"name": "Battery"},
       "filter_life": {"name": "Filter life"}
     },
-    "fan": {"fan": {"name": null}},
+    "fan": {"fan": {"name": "Fan"}},
     "switch": {"display": {"name": "Display"}},
     "button": {"reset_filter": {"name": "Reset filter life"}}
   }
