@@ -4,13 +4,22 @@ A local Bluetooth custom integration using [`govee-ble-client`](https://github.c
 
 ## Supported devices
 
-| Model | Entities |
-| --- | --- |
-| H5179 thermo-hygrometer | Temperature, humidity, battery |
-| H7102 tower fan | Fan power, Normal/Sleep/Nature presets, speeds 1–8, oscillation, display switch |
-| H7126 air purifier | Fan power, Sleep/Low/High/Custom presets, display switch, filter life sensor, filter reset button |
+The matrix lists the features exposed in Home Assistant by this integration. **—** means the feature is not exposed for that model.
 
-H7126 Custom mode reads and reapplies the schedule already stored on the device. If its marker, modes, or durations cannot be preserved by the client's writer, the action fails before sending controls. Editing the schedule is not exposed. H7102 Custom mode is also omitted because its settings contain fields that are not fully mapped in the client.
+| Feature | H5179 temperature & humidity sensor | H7102 tower fan | H7126 air purifier |
+| --- | --- | --- | --- |
+| Temperature sensor | Yes | — | — |
+| Humidity sensor | Yes | — | — |
+| Battery level sensor | Yes | — | — |
+| Power on/off | — | Yes | Yes |
+| Fan speed control | — | 8 speeds through HA's percentage control | Low/High presets |
+| Preset modes | — | Normal, Sleep, Nature | Sleep, Low, High, Custom* |
+| Oscillation control | — | Yes | — |
+| Panel display on/off switch | — | Yes | Yes |
+| Filter life sensor | — | — | Yes |
+| Reset filter life button | — | — | Yes |
+
+\* H7126 Custom mode reads and reapplies the schedule already stored on the device. If its marker, modes, or durations cannot be preserved by the client's writer, the action fails before sending controls. Editing the schedule is not exposed. H7102 Custom mode is also omitted because its settings contain fields that are not fully mapped in the client.
 
 ## Install
 
