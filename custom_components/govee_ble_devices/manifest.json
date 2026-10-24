@@ -6,7 +6,6 @@
     {"local_name": "*H7102*", "connectable": true},
     {"local_name": "*H7126*", "connectable": true}
   ],
-  "categories": ["climate", "sensors.temperature_humidity"],
   "codeowners": ["@jnstockley"],
   "config_flow": true,
   "dependencies": ["bluetooth_adapters"],
