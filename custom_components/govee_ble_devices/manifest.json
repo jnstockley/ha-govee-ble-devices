@@ -20,5 +20,5 @@
   "issue_tracker": "https://github.com/jnstockley/ha-govee-ble-devices/issues",
   "loggers": ["govee_ble_client"],
   "requirements": ["govee-ble-client==1.0.0b3"],
-  "version": "1.0.0b4"
+  "version": "1.0.0b5"
 }
