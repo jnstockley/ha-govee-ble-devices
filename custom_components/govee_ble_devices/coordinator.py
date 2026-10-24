@@ -7,11 +7,13 @@ import logging
 from collections.abc import Callable
 from datetime import timedelta
 from time import monotonic
-from typing import Any
+from typing import Any, Self
 
+from bleak.backends.device import BLEDevice
 from bleak.exc import BleakError
+from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 from govee_ble_client import (
-    DiscoveredDevice,
+    GattConnection,
     H5179Profile,
     H7102Client,
     H7126Mode,
@@ -29,6 +31,20 @@ from .const import CONF_MODEL
 _LOGGER = logging.getLogger(__name__)
 POLL_INTERVAL = timedelta(seconds=90)
 MAX_AGE = 300.0
+
+
+class RetryGattConnection(GattConnection):
+    """Use Home Assistant's retry connector with the client's GATT API."""
+
+    async def connect(self) -> Self:
+        """Establish a retrying BLE connection before protocol operations."""
+        self._client = await establish_connection(
+            BleakClientWithServiceCache,
+            self._device,
+            self._device.name or self._device.address,
+            timeout=self._timeout,
+        )
+        return self
 
 
 class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -55,18 +71,13 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and monotonic() - self._seen[key] < MAX_AGE
         )
 
-    def _device(self) -> DiscoveredDevice:
+    def _device(self) -> BLEDevice:
         ble_device = bluetooth.async_ble_device_from_address(self.hass, self.address)
         if ble_device is None:
             raise UpdateFailed(
                 "Device is not reachable through a connectable Bluetooth adapter"
             )
-        return DiscoveredDevice(
-            identifier=self.address,
-            name=ble_device.name,
-            rssi=None,
-            _ble_device=ble_device,
-        )
+        return ble_device
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch status while serializing it with control operations."""
@@ -98,7 +109,7 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
         def on_notification(_sender: Any, data: bytearray) -> None:
             queue.put_nowait(bytes(data))
 
-        async with device.connect(timeout=12) as connection:
+        async with RetryGattConnection(device, timeout=12) as connection:
             notify_uuid = (
                 profile.io_uuid if self.model == "H5179" else profile.notify_uuid
             )
@@ -123,10 +134,10 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 await connection.stop_notify(notify_uuid)
         return values
 
-    async def _read_h7102(self, device: DiscoveredDevice) -> dict[str, Any]:
+    async def _read_h7102(self, device: BLEDevice) -> dict[str, Any]:
         values: dict[str, Any] = {}
         async with (
-            device.connect(timeout=12) as connection,
+            RetryGattConnection(device, timeout=12) as connection,
             H7102Client(connection) as client,
         ):
             await client.request_state()
@@ -194,7 +205,7 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
         async with self._lock:
             try:
                 device = self._device()
-                async with device.connect(timeout=12) as connection:
+                async with RetryGattConnection(device, timeout=12) as connection:
                     if self.model == "H7102":
                         async with H7102Client(connection) as client:
                             for index, (command, args) in enumerate(commands):

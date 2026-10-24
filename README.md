@@ -16,7 +16,7 @@ H7126 Custom mode selects the schedule already stored on the device. Editing the
 
 1. Install and configure [HACS](https://www.hacs.xyz/docs/use/download/prerequisites/) in Home Assistant.
 2. In HACS, open the three-dot menu, choose **Custom repositories**, add `https://github.com/jnstockley/ha-govee-ble-devices`, and select **Integration** as the type.
-3. Open **Govee BLE Devices** in HACS and select **Download**. For the current `1.0.0b2` prerelease, enable prereleases for this repository or select that version explicitly. Restart Home Assistant after the download.
+3. Open **Govee BLE Devices** in HACS and select **Download**. For prerelease versions, enable prereleases for this repository or select the version explicitly. Restart Home Assistant after the download.
 4. In **Settings → Devices & services → Add integration**, search for **Govee BLE Devices** and select a discovered device. Repeat for each additional device, including devices of the same model.
 
 The device must be advertising within range of a Home Assistant Bluetooth adapter or a connectable Bluetooth proxy. Passive-only proxies cannot establish the GATT connections these models require. Home Assistant must be able to install `govee-ble-client==1.0.0b2` from PyPI.
@@ -25,7 +25,7 @@ HACS tracks the repository and exposes an update entity in Home Assistant. When 
 
 ## Data and availability
 
-The integration polls every 90 seconds using short-lived connections. Invalid notification frames are ignored. A failed poll marks the device's entities unavailable; individual fields also become unavailable when they have not received a valid update for five minutes. The last valid values are kept internally so a brief malformed or incomplete response cannot replace good data. Commands are serialized with polling and followed by a fresh readback.
+The integration polls every 90 seconds using short-lived connections. Connection establishment uses Home Assistant's BLE retry connector, including for control commands. Invalid notification frames are ignored. A failed poll marks the device's entities unavailable; individual fields also become unavailable when they have not received a valid update for five minutes. The last valid values are kept internally so a brief malformed or incomplete response cannot replace good data. Commands are serialized with polling and followed by a fresh readback.
 
 Some device firmware may respond slowly or differ from the captured profiles. Report the model, firmware, affected entity, and redacted debug logs when opening an issue. Bluetooth addresses and raw packet bytes can identify a device, so redact them before sharing.
 
@@ -37,6 +37,6 @@ The integration is pure Python under `custom_components/govee_ble_devices`. Run 
 
 1. Update `version` in `custom_components/govee_ble_devices/manifest.json` and the changelog or release notes. If the client version changes, update its pinned `requirements` entry and the installation note above.
 2. Push the changes to the default branch and confirm the **Validate** workflow passes.
-3. Create and push a tag matching the manifest version, prefixed with `v` (for example, `v1.0.0b2`). The tag workflow validates the version and publishes the matching GitHub Release. Beta or release-candidate versions become GitHub prereleases.
+3. Create and push a tag matching the manifest version, prefixed with `v` (for example, `v1.0.0b3`). The tag workflow validates the version and publishes the matching GitHub Release. Beta or release-candidate versions become GitHub prereleases.
 
 HACS needs a public GitHub repository with a short description, topics, Issues enabled, and at least one GitHub Release for version-based update notifications. The repository's HACS custom-repository URL is the GitHub URL in the installation steps; it does not need to be listed in HACS's default catalog. [HACS publishing requirements](https://www.hacs.xyz/docs/publish/start/)
