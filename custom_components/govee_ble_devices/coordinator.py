@@ -35,9 +35,9 @@ from .connection import ProfileGattConnection
 from .const import CONF_MODEL
 from .custom_schedule import CustomScheduleEditor, FieldValue
 from .notifications import NotificationBuffer, Readings
+from .polling import poll_interval_seconds
 
 _LOGGER = logging.getLogger(__name__)
-POLL_INTERVAL = timedelta(seconds=90)
 MAX_AGE = 300.0
 COMMAND_VERIFY_DELAY = 1.0
 H7126_COMMAND_SETTLE_DELAY = 0.3
@@ -67,13 +67,15 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """A single connection owner for one physical Govee device."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        interval = poll_interval_seconds(entry.options)
         super().__init__(
             hass,
             _LOGGER,
             config_entry=entry,
             name=entry.title,
-            update_interval=POLL_INTERVAL,
+            update_interval=timedelta(seconds=interval),
         )
+        self._max_age = max(MAX_AGE, interval * 2)
         self.address: str = entry.data[CONF_ADDRESS]
         self.model: str = entry.data[CONF_MODEL]
         self._lock = asyncio.Lock()
@@ -100,7 +102,7 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return (
             self.last_update_success
             and key in self._seen
-            and monotonic() - self._seen[key] < MAX_AGE
+            and monotonic() - self._seen[key] < self._max_age
         )
 
     def _device(self) -> BLEDevice:

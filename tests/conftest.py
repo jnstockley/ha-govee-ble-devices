@@ -24,6 +24,7 @@ async def coordinator(tmp_path):
         entry_id="test-device-entry",
         title="Test device",
         data={"address": "AA:BB:CC:DD:EE:FF", "model": "H5179"},
+        options={},
         async_on_unload=unload_callbacks.append,
         unload_callbacks=unload_callbacks,
         pref_disable_polling=False,

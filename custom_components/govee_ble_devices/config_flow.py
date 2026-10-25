@@ -4,15 +4,32 @@ from __future__ import annotations
 
 import voluptuous as vol
 from homeassistant.components import bluetooth
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlowWithReload,
+)
 from homeassistant.const import CONF_ADDRESS
+from homeassistant.core import callback
 from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
     SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
 )
 
-from .const import CONF_MODEL, DOMAIN, SUPPORTED_MODELS
+from .const import (
+    CONF_MODEL,
+    CONF_POLL_INTERVAL,
+    DOMAIN,
+    MAX_POLL_INTERVAL,
+    MIN_POLL_INTERVAL,
+    SUPPORTED_MODELS,
+)
+from .polling import poll_interval_seconds, validate_poll_interval
 
 MODEL_NAMES = {
     "H5179": "Govee Temperature & Humidity Sensor (H5179)",
@@ -39,6 +56,12 @@ class GoveeBLEConfigFlow(ConfigFlow, domain=DOMAIN):
     """Create a separate entry for each physical Bluetooth address."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> GoveeBLEOptionsFlow:
+        """Offer settings for this individual device entry."""
+        return GoveeBLEOptionsFlow()
 
     def __init__(self) -> None:
         self._discovery: bluetooth.BluetoothServiceInfoBleak | None = None
@@ -124,4 +147,42 @@ class GoveeBLEConfigFlow(ConfigFlow, domain=DOMAIN):
                     SelectSelectorConfig(options=options)
                 )
             }
+        )
+
+
+class GoveeBLEOptionsFlow(OptionsFlowWithReload):
+    """Save polling preferences and reload only this device."""
+
+    async def async_step_init(self, user_input: dict | None = None) -> ConfigFlowResult:
+        """Configure how often to read the device over Bluetooth."""
+        errors = {}
+        if user_input is not None:
+            try:
+                interval = validate_poll_interval(user_input.get(CONF_POLL_INTERVAL))
+            except ValueError:
+                errors[CONF_POLL_INTERVAL] = "invalid_poll_interval"
+            else:
+                return self.async_create_entry(
+                    title="",
+                    data={**self.config_entry.options, CONF_POLL_INTERVAL: interval},
+                )
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_POLL_INTERVAL,
+                        default=poll_interval_seconds(self.config_entry.options),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=MIN_POLL_INTERVAL,
+                            max=MAX_POLL_INTERVAL,
+                            step=1,
+                            mode=NumberSelectorMode.BOX,
+                            unit_of_measurement="s",
+                        )
+                    )
+                }
+            ),
+            errors=errors,
         )
