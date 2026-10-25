@@ -386,6 +386,12 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except ValueError:
                 continue
             received = monotonic()
+            if notification.fan_speed is not None:
+                _LOGGER.debug(
+                    "Fan speed observed model=%s speed=%s",
+                    self.model,
+                    notification.fan_speed,
+                )
             for key in keys:
                 values.observe(key, getattr(notification, key), received)
             if all(key in values for key in keys):
@@ -451,6 +457,12 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                     await client.set_custom_settings(custom)
                                 else:
                                     await getattr(client, command)(*args)
+                                if command == "set_fan_speed":
+                                    _LOGGER.debug(
+                                        "Fan speed submitted model=%s speed=%s",
+                                        self.model,
+                                        args[0],
+                                    )
                         elif self.model == "H7126":
                             profile = H7126Profile()
                             custom = None

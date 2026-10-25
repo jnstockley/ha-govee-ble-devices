@@ -653,6 +653,51 @@ async def test_cancelled_latency_phase_is_recorded(
     assert paused_encrypted.transports[0].closed
 
 
+@pytest.mark.parametrize("percentage, speed", [(50, 4), (62, 5), (63, 5), (75, 6)])
+async def test_speed_request_submission_and_observation_can_be_distinguished(
+    coordinator, encrypted, caplog, percentage, speed
+):
+    coordinator.data = {"power_state": True, "fan_speed": 5}
+    coordinator._seen.update(power_state=monotonic(), fan_speed=monotonic())
+    fan = GoveeBLEFan(coordinator)
+    with caplog.at_level(logging.DEBUG, logger="custom_components.govee_ble_devices"):
+        await fan.async_set_percentage(percentage)
+        # Write completion is provisional. The simulated fan still reports 5.
+        assert coordinator.data["fan_speed"] == speed
+        values = await coordinator._async_update_data()
+    assert encrypted[0].writes[-1][0:4] == bytes((0x33, 0x05, 0x01, speed))
+    assert values["fan_speed"] == 5
+    assert f"Fan percentage request model=H7102 percentage={percentage}" in caplog.text
+    assert f"Fan speed submitted model=H7102 speed={speed}" in caplog.text
+    assert "Fan speed observed model=H7102 speed=5" in caplog.text
+    assert coordinator.address not in caplog.text
+    # A differing readback must not automatically replay an uncertain write.
+    assert len(encrypted) == 2
+    assert all(frame[0] == 0xAA for frame in encrypted[1].writes)
+
+
+async def test_failed_speed_submission_is_not_logged_as_submitted(
+    coordinator, encrypted, monkeypatch, caplog
+):
+    coordinator.data = {"power_state": True, "fan_speed": 5}
+    coordinator._seen.update(power_state=monotonic(), fan_speed=monotonic())
+
+    async def fail(*args, **kwargs):
+        raise OSError("PRIVATE_BLE_PAYLOAD")
+
+    monkeypatch.setattr(h7102.GoveeAesRc4V1, "write", fail)
+    fan = GoveeBLEFan(coordinator)
+    with (
+        caplog.at_level(logging.DEBUG, logger="custom_components.govee_ble_devices"),
+        pytest.raises(integration.UpdateFailed),
+    ):
+        await fan.async_set_percentage(50)
+    assert "Fan percentage request model=H7102 percentage=50" in caplog.text
+    assert "Fan speed submitted" not in caplog.text
+    assert "PRIVATE_BLE_PAYLOAD" not in caplog.text
+    assert coordinator.data["fan_speed"] == 5
+
+
 async def test_encrypted_read_retains_partial_state_on_missing_optional_reply(
     coordinator, radio, encrypted, monkeypatch
 ):

@@ -67,6 +67,32 @@ Response-collection durations are logged separately. A long setup phase points t
 
 Some device firmware may respond slowly or differ from the captured profiles. Report the model, firmware, affected entity, and redacted debug logs when opening an issue. Bluetooth addresses and raw packet bytes can identify a device, so redact them before sharing.
 
+### HomeKit fan speed troubleshooting
+
+H7102 has eight discrete speeds: 50% selects speed 4, and a displayed 62%
+represents speed 5 (62.5% before integer rounding). A 50% request should not
+be converted to speed 5. HomeKit Bridge forwards speed changes through HA's
+fan percentage action.
+
+If the fan physically stays at its old speed, enable debug logging for this
+integration and HomeKit Bridge. After installing the diagnostic changes,
+change from 75% to 50% once in Apple Home, wait for it to settle, and repeat
+the same change directly in HA. Avoid dragging through several intermediate
+values during this comparison. Look for these integration DEBUG messages:
+
+- `Fan percentage request model=H7102 percentage=50`: the request reached the
+  fan entity, before any queue or connection wait.
+- `Fan speed submitted model=H7102 speed=4`: the client write returned. This
+  does not prove that the proxy transmitted it or the fan applied it.
+- `Fan speed observed model=H7102 speed=4`: a subsequent read reported speed 4.
+  An observed speed 5 means that read still reported the old 62% setting.
+
+Use the timestamps, `BLE timing` phases, and HomeKit's incoming speed log to
+distinguish missing bridge requests, queue/setup delay, write failures, and
+differing readback. Include HA Core and proxy firmware versions with redacted
+logs. The integration's speed traces contain numeric percentage/speed values,
+not addresses or raw packets. Restore normal logging after reproduction.
+
 ## Development
 
 The integration is pure Python under `custom_components/govee_ble_devices`. With Python 3.14 in a virtual environment, install `python -m pip install -r requirements-test.txt`, then run:

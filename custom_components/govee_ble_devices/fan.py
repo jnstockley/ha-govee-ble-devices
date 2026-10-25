@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from govee_ble_client import H7102WorkMode
 from homeassistant.components.fan import FanEntity, FanEntityFeature
 from homeassistant.config_entries import ConfigEntry
@@ -10,6 +12,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .coordinator import GoveeBLECoordinator
 from .entity import GoveeBLEEntity
+
+_LOGGER = logging.getLogger(__name__)
 
 PRESETS = {
     "H7102": ("Normal", "Sleep", "Nature", "Custom"),
@@ -97,6 +101,11 @@ class GoveeBLEFan(GoveeBLEEntity, FanEntity):
             else:
                 commands.append((f"set_{preset_mode.lower()}_mode", ()))
         if percentage is not None and self.coordinator.model == "H7102":
+            _LOGGER.debug(
+                "Fan percentage request model=%s percentage=%s",
+                self.coordinator.model,
+                percentage,
+            )
             commands.append(
                 ("set_fan_speed", (max(1, min(8, round(percentage * 8 / 100))),))
             )
@@ -119,6 +128,11 @@ class GoveeBLEFan(GoveeBLEEntity, FanEntity):
             await self.coordinator.async_command(f"set_{preset_mode.lower()}_mode")
 
     async def async_set_percentage(self, percentage: int) -> None:
+        _LOGGER.debug(
+            "Fan percentage request model=%s percentage=%s",
+            self.coordinator.model,
+            percentage,
+        )
         if percentage == 0:
             await self.async_turn_off()
             return
