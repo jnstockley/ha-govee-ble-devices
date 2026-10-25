@@ -7,6 +7,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import GoveeBLECoordinator
+from .custom_schedule import FieldValue
 
 
 class GoveeBLEEntity(CoordinatorEntity[GoveeBLECoordinator]):
@@ -29,3 +30,28 @@ class GoveeBLEEntity(CoordinatorEntity[GoveeBLECoordinator]):
     def available(self) -> bool:
         """Avoid presenting old or never received values as live."""
         return super().available and self.coordinator.fresh(self.key)
+
+
+class GoveeBLECustomEntity(GoveeBLEEntity):
+    """A local draft field, whose availability is independent of radio freshness."""
+
+    def __init__(
+        self, coordinator: GoveeBLECoordinator, block: int, field: str
+    ) -> None:
+        super().__init__(coordinator, f"custom_block_{block + 1}_{field}")
+        self.block = block
+        self.field = field
+        self._attr_translation_key = f"custom_{field}"
+        self._attr_translation_placeholders = {"block": str(block + 1)}
+
+    @property
+    def draft_value(self) -> FieldValue | None:
+        editor = self.coordinator.custom_editor
+        return editor.value(self.block, self.field) if editor is not None else None
+
+    @property
+    def available(self) -> bool:
+        return not self.coordinator._closing and self.draft_value is not None
+
+    async def async_edit(self, value: FieldValue) -> None:
+        await self.coordinator.async_edit_custom(self.block, self.field, value)

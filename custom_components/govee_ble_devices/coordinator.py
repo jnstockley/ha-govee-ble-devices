@@ -33,6 +33,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .connection import ProfileGattConnection
 from .const import CONF_MODEL
+from .custom_schedule import CustomScheduleEditor, FieldValue
 from .notifications import NotificationBuffer, Readings
 
 _LOGGER = logging.getLogger(__name__)
@@ -88,6 +89,11 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._verify_task: asyncio.Task | None = None
         self._shutdown_lock = asyncio.Lock()
         self._pending_speed: _SpeedBatch | None = None
+        self.custom_editor = (
+            CustomScheduleEditor(hass, entry.entry_id, self.model)
+            if self.model in ("H7102", "H7126")
+            else None
+        )
 
     def fresh(self, key: str) -> bool:
         """Whether a field was decoded from a recent valid reply."""
@@ -327,6 +333,8 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if not values:
                 raise UpdateFailed("Device returned no valid status fields")
             self._seen.update(values.seen)
+            if self.custom_editor is not None and "custom_settings" in values:
+                self.custom_editor.observe(values["custom_settings"])
             return {**(self.data or {}), **values}
 
     @asynccontextmanager
@@ -363,6 +371,8 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             profile.request_filter_life,
                         )
                     )
+                    if self.model == "H7126" and self.custom_editor is not None:
+                        queries += (profile.request_custom_mode_settings,)
                     # Setup has its own budget; query writes and response waiting
                     # share this deadline. Keep the captured conservative pacing.
                     async with asyncio.timeout_at(deadline):
@@ -389,6 +399,8 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "display_state",
             "oscillation_state",
         )
+        if self.custom_editor is not None:
+            keys += ("custom_settings",)
         while (remaining := deadline - monotonic()) > 0:
             try:
                 notification = await client.receive(timeout=remaining)
@@ -404,7 +416,12 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     notification.fan_speed,
                 )
             for key in keys:
-                values.observe(key, getattr(notification, key), received)
+                value = (
+                    notification.mode_selector_data
+                    if key == "custom_settings" and notification.mode_selector == 2
+                    else getattr(notification, key, None)
+                )
+                values.observe(key, value, received)
             if all(key in values for key in keys):
                 break
 
@@ -416,6 +433,8 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self.model == "H5179"
             else ("power_state", "mode", "display_state", "filter_life_percent")
         )
+        if self.model == "H7126" and self.custom_editor is not None:
+            keys += ("custom_settings",)
         mode_hint = None
         gear = None
         while True:
@@ -440,9 +459,190 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for key in keys:
                 if key == "mode":
                     continue  # Saved gear is active only when the category says so.
+                if key == "custom_settings" and notification.raw[:3] != b"\xaa\x05\x02":
+                    continue  # Command echoes are not saved-schedule readback.
                 values.observe(key, getattr(notification, key), received)
             if all(key in values for key in keys):
                 return
+
+    async def async_edit_custom(
+        self, block: int, field: str, value: FieldValue
+    ) -> None:
+        """Persist a local setting without changing reported device state."""
+        if self.custom_editor is None:
+            raise ValueError("This device has no custom schedule")
+        try:
+            await self.custom_editor.async_edit(block, field, value)
+        finally:
+            self.async_update_listeners()
+
+    async def _custom_state(self, connection, client, buffer=None) -> Readings:
+        """Read power, active mode, and saved settings through one receiver."""
+        values = Readings()
+        deadline = monotonic() + RESPONSE_TIMEOUT
+        async with asyncio.timeout_at(deadline):
+            if client is not None:
+                await client.request_state()
+            else:
+                profile = H7126Profile()
+                for index, query in enumerate(
+                    (
+                        profile.request_power_state,
+                        profile.request_mode_hint,
+                        profile.request_gear_mode,
+                        profile.request_custom_mode_settings,
+                    )
+                ):
+                    if index:
+                        await asyncio.sleep(0.12)
+                    await query(connection)
+            mode_key = "work_mode" if client is not None else "mode"
+            mode_hint = None
+            gear = None
+            while True:
+                if client is not None:
+                    try:
+                        notification = await client.receive(
+                            timeout=deadline - monotonic()
+                        )
+                    except ValueError:
+                        continue
+                    received = monotonic()
+                    for key in (
+                        "power_state",
+                        "work_mode",
+                        "fan_speed",
+                        "oscillation_state",
+                        "display_state",
+                    ):
+                        values.observe(key, getattr(notification, key), received)
+                    if notification.mode_selector == 2:
+                        values.observe(
+                            "custom_settings", notification.mode_selector_data, received
+                        )
+                else:
+                    notification, received = await buffer.next(
+                        profile.parse_notification, deadline
+                    )
+                    values.observe("power_state", notification.power_state, received)
+                    raw = notification.raw
+                    if raw[:3] == b"\xaa\x05\x02":
+                        values.observe(
+                            "custom_settings", notification.custom_settings, received
+                        )
+                    if raw[:3] == b"\xaa\x05\x00" and raw[3] in (1, 2):
+                        mode_hint = raw[3]
+                    elif raw[:3] == b"\xaa\x05\x01" and notification.mode is not None:
+                        gear = (notification.mode, received)
+                    if mode_hint == 2:
+                        values.observe("mode", H7126Mode.CUSTOM, received)
+                    elif mode_hint == 1 and gear is not None:
+                        values.observe("mode", *gear)
+                if all(
+                    key in values
+                    for key in ("power_state", mode_key, "custom_settings")
+                ):
+                    return values
+
+    async def _drain_custom_replies(self, client, buffer) -> None:
+        """Discard queued prewrite observations before asking for verification."""
+        if client is None:
+            if buffer.overflow or not buffer.connection.is_connected:
+                # Let next() report overflow/disconnect with its normal exception.
+                await buffer.next(H7126Profile.parse_notification, monotonic())
+            while not buffer.queue.empty():
+                item = buffer.queue.get_nowait()
+                if item is None:
+                    raise GoveeBLEError("Disconnected before custom verification")
+            return
+        for _ in range(64):
+            try:
+                await client.receive(timeout=0.01)
+            except TimeoutError:
+                return
+            except ValueError:
+                continue
+        raise GoveeBLEError("Too many pending custom observations")
+
+    async def _apply_custom_session(self, connection, client, buffer, snapshot):
+        """Preflight, submit exactly once, and verify within one owned session."""
+        editor = self.custom_editor
+        before = await self._custom_state(connection, client, buffer)
+        settings = editor.merge(before["custom_settings"], snapshot)
+        if before["power_state"] is False:
+            if client is not None:
+                await client.turn_on()
+            else:
+                await H7126Profile().turn_on(connection)
+            await asyncio.sleep(0.1)
+        if client is not None:
+            await client.set_custom_settings(settings)
+        else:
+            await H7126Profile().set_custom_schedule(
+                connection, editor.h7126_segments(settings)
+            )
+            await asyncio.sleep(H7126_COMMAND_SETTLE_DELAY)
+        await self._drain_custom_replies(client, buffer)
+        after = await self._custom_state(connection, client, buffer)
+        mode_key = "work_mode" if client is not None else "mode"
+        custom = H7102WorkMode.CUSTOM if client is not None else H7126Mode.CUSTOM
+        if (
+            after["custom_settings"] != settings
+            or after[mode_key] != custom
+            or not after["power_state"]
+        ):
+            raise ValueError("Device did not confirm custom settings and mode")
+        return after
+
+    async def async_apply_custom(self) -> None:
+        """Apply a local snapshot and select Custom without replaying writes."""
+        if self.custom_editor is None:
+            raise ValueError("This device has no custom schedule")
+        snapshot = self.custom_editor.snapshot()
+        self._pending_speed = None
+        async with self._transaction(control=True):
+            try:
+                async with self._session() as (connection, client):
+                    with self._timing("controls", "custom"):
+                        if client is not None:
+                            values = await self._apply_custom_session(
+                                connection, client, None, snapshot
+                            )
+                        else:
+                            async with self._notifications(
+                                connection, H7126Profile()
+                            ) as buffer:
+                                values = await self._apply_custom_session(
+                                    connection, None, buffer, snapshot
+                                )
+            except asyncio.CancelledError:
+                self._schedule_verification()
+                raise
+            except (
+                BleakError,
+                GoveeBLEError,
+                OSError,
+                TimeoutError,
+                ValueError,
+                RuntimeError,
+            ) as err:
+                self._schedule_verification()
+                raise UpdateFailed(
+                    "Could not confirm custom mode. Pending edits were retained; "
+                    "check the device before applying again."
+                ) from err
+            self._seen.update(values.seen)
+            self.async_set_updated_data({**(self.data or {}), **values})
+            try:
+                await self.custom_editor.async_confirm(
+                    snapshot, values["custom_settings"]
+                )
+            except OSError as err:
+                raise UpdateFailed(
+                    "Custom mode was confirmed, but saving the local draft failed"
+                ) from err
+            finally:
+                self.async_update_listeners()
 
     async def async_command(self, command: str, *args: Any) -> None:
         """Issue a verified model command, then read its actual state."""

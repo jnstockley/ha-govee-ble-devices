@@ -322,64 +322,6 @@ async def test_disconnect_resolver_refreshes_native_device(
     assert len(radio.clients) == 1
 
 
-@pytest.fixture
-def encrypted(coordinator, radio, monkeypatch):
-    coordinator.model = "H7102"
-    use_replies(monkeypatch, radio, lambda *_: None, purifier=True)
-    transports = []
-
-    class Transport:
-        """Decoded encrypted-stream double; real H7102Client parses every frame."""
-
-        custom_replies = ()
-
-        def __init__(self, connection, **kwargs):
-            self.connection = connection
-            self.queue = asyncio.Queue()
-            self.established = False
-            self.receiving = False
-            self.closed = False
-            self.writes = []
-            self.replies = [
-                b"bad",
-                build_packet(0xAA, 0x01, b"\x00"),
-                build_packet(0xAA, 0x05, b"\x00\x01"),
-                build_packet(0xAA, 0x05, b"\x01\x05"),
-                build_packet(0xAA, 0x16, b"\x00"),
-                build_packet(0xAA, 0x1F, b"\x01\x00"),
-            ]
-            transports.append(self)
-
-        async def connect(self, **kwargs):
-            self.established = True
-
-        async def close(self):
-            assert self.connection.is_connected  # Encryption closes before GATT.
-            self.established = False
-            self.closed = True
-
-        async def write(self, frame):
-            self.writes.append(frame)
-            if frame[:3] == b"\xaa\x05\x02":
-                for item in self.custom_replies:
-                    self.queue.put_nowait(item)
-            if frame[:3] == b"\xaa\x1f\x01":
-                for item in self.replies:
-                    self.queue.put_nowait(item)
-
-        async def receive(self, *, timeout):
-            assert not self.receiving  # Exactly one encrypted receiver.
-            self.receiving = True
-            try:
-                async with asyncio.timeout(timeout):
-                    return await self.queue.get()
-            finally:
-                self.receiving = False
-
-    monkeypatch.setattr(h7102, "GoveeAesRc4V1", Transport)
-    return transports
-
-
 @pytest.mark.parametrize("powered_on", [True, False])
 async def test_h7102_custom_preset_preserves_saved_settings(
     coordinator, radio, encrypted, monkeypatch, powered_on

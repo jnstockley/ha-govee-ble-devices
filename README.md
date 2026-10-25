@@ -14,12 +14,46 @@ The matrix lists the features exposed in Home Assistant by this integration. **�
 | Power on/off | — | Yes | Yes |
 | Fan speed control | — | 8 speeds through HA's percentage control | Low/High presets |
 | Preset modes | — | Normal, Sleep, Nature, Custom* | Sleep, Low, High, Custom* |
+| Custom block editing | — | Speed and oscillation for 3 blocks; duration for blocks 1–2 | Sleep/Low/High for 3 blocks; duration for blocks 1–2 |
+| Apply custom mode button | — | Yes | Yes |
 | Oscillation control | — | Yes | — |
 | Panel display on/off switch | — | Yes | Yes |
 | Filter life sensor | — | — | Yes |
 | Reset filter life button | — | — | Yes |
 
-\* Custom mode reads and reapplies the schedule already stored on the device; configure it in the Govee app. H7102 preserves the complete settings block, including fields that are not fully mapped in the client. H7126 rejects schedules whose marker, modes, or durations cannot be preserved by the client's writer. If reading or preserving the saved settings fails, no controls are sent. Editing schedules is not exposed.
+\* The fan's Custom preset reads and reapplies the schedule already stored on the device. To edit it in HA, use the block controls and **Apply custom mode** as described below. H7102 preserves unknown fields and untouched bytes. H7126 rejects schedules whose marker, modes, or durations cannot be preserved by the client's writer. If reading or preserving the saved settings fails, no controls are sent.
+
+### Editing custom blocks
+
+On the H7102 or H7126 device page, edit the **Custom block 1**, **2**, and **3**
+controls, then press **Apply custom mode**. Changing a block only stages a local
+draft: it sends no Bluetooth controls and leaves the active mode alone. Draft
+edits survive Home Assistant restarts and integration reloads.
+
+- H7102: all three blocks have speed **1–8** and oscillation controls.
+- H7126: all three blocks have a **Sleep**, **Low**, or **High** mode.
+- Blocks 1 and 2 have durations in whole minutes from **1–65534**.
+  **Block 3 always runs continuously**, so it has no duration control or
+  Continuous switch. Apply always writes block 3 with a continuous duration.
+
+**Apply custom mode saves the blocks and activates Custom.** It powers the
+device on if necessary. Immediately before applying, HA reads the saved schedule
+and merges your edited fields, preserving untouched speed, oscillation, mode,
+and block 1–2 duration changes made through the Govee app. Pressing Apply with
+no pending edits activates the saved schedule with block 3 set to continuous.
+Choosing the fan's existing Custom preset also activates the device's saved
+schedule; it does not submit local draft edits.
+
+HA clears submitted edits only after reading back matching settings and Custom
+mode. A timeout, disconnect, or mismatched reply retains the draft and reports
+an error; HA does not automatically replay the write. An interrupted Apply may
+already have powered on the device or selected Custom, so check its state before
+applying again. Edits made during Apply remain pending for your next submission.
+
+Controls without a known value are unavailable until the device returns a saved
+schedule. Missing schedule replies do not invalidate otherwise successful power
+or sensor readings. Physical round-trip verification of edited schedules is
+still required on each model and firmware; offline tests simulate the radio.
 
 ## Install
 
@@ -28,7 +62,7 @@ The matrix lists the features exposed in Home Assistant by this integration. **�
 3. Open **Govee BLE Devices** in HACS and select **Download**. For prerelease versions, enable prereleases for this repository or select the version explicitly. Restart Home Assistant after the download.
 4. In **Settings → Devices & services → Add integration**, search for **Govee BLE Devices** and select a discovered device. Repeat for each additional device, including devices of the same model.
 
-The device must be advertising within range of a Home Assistant Bluetooth adapter or a connectable Bluetooth proxy. Passive-only proxies cannot establish the GATT connections these models require. Home Assistant must be able to install `govee-ble-client==1.0.0b3` from PyPI.
+The device must be advertising within range of a Home Assistant Bluetooth adapter or a connectable Bluetooth proxy. Passive-only proxies cannot establish the GATT connections these models require. Home Assistant must be able to install `govee-ble-client==1.0.0b4` from PyPI.
 
 HACS tracks the repository and exposes an update entity in Home Assistant. When a newer release is available, install it through the HACS update entity or HACS dashboard, then restart Home Assistant to load the new Python code. Prerelease updates are shown when prereleases are enabled for this repository. HACS handles future integration file downloads; no manual copying is needed. [HACS update entity documentation](https://www.hacs.xyz/docs/use/entities/update/)
 
