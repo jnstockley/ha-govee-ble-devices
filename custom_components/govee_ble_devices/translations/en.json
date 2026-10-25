@@ -22,6 +22,20 @@
       "not_supported": "This Bluetooth device is not supported."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Device settings",
+        "description": "Choose how often this device is read over Bluetooth (5–3600 seconds). Shorter intervals increase Bluetooth activity and battery use. Connection and read time can extend the time between updates. Saving a changed interval reloads this device's integration entry.",
+        "data": {
+          "poll_interval": "Polling interval"
+        }
+      }
+    },
+    "error": {
+      "invalid_poll_interval": "Enter a whole number of seconds from 5 to 3600."
+    }
+  },
   "entity": {
     "sensor": {
       "temperature": {
