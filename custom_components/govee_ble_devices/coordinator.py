@@ -19,6 +19,7 @@ from govee_ble_client import (
     H5179Profile,
     H7102Client,
     H7102Profile,
+    H7102WorkMode,
     H7126Mode,
     H7126Profile,
 )
@@ -383,10 +384,17 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
             try:
                 async with self._session() as (connection, client):
                     if client is not None:
+                        custom_command = ("set_work_mode", (H7102WorkMode.CUSTOM,))
+                        custom = None
+                        if custom_command in commands:
+                            custom = await self._saved_h7102_custom(client)
                         for index, (command, args) in enumerate(commands):
                             if index:
                                 await asyncio.sleep(0.1)
-                            await getattr(client, command)(*args)
+                            if (command, args) == custom_command:
+                                await client.set_custom_settings(custom)
+                            else:
+                                await getattr(client, command)(*args)
                     elif self.model == "H7126":
                         profile = H7126Profile()
                         custom = None
@@ -425,6 +433,24 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.data = {**(self.data or {}), **updates}
                 self.async_update_listeners()
             self._schedule_verification()
+
+    async def _saved_h7102_custom(self, client: H7102Client) -> bytes:
+        """Read the saved block before any controls, preserving unknown fields."""
+        deadline = monotonic() + RESPONSE_TIMEOUT
+        async with asyncio.timeout_at(deadline):
+            await client.request_custom_schedule()
+            while (remaining := deadline - monotonic()) > 0:
+                try:
+                    notification = await client.receive(timeout=remaining)
+                except ValueError:
+                    continue
+                if notification.mode_selector != 2:
+                    continue
+                settings = notification.mode_selector_data
+                if settings is None or len(settings) != 16:
+                    raise ValueError("Saved Custom settings must contain 16 bytes")
+                return settings
+            raise TimeoutError("Timed out reading saved Custom settings")
 
     async def _saved_custom(self, connection, profile):
         """Read before selecting Custom; refuse settings the writer cannot preserve."""

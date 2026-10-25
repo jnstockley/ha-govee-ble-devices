@@ -13,13 +13,13 @@ The matrix lists the features exposed in Home Assistant by this integration. **�
 | Battery level sensor | Yes | — | — |
 | Power on/off | — | Yes | Yes |
 | Fan speed control | — | 8 speeds through HA's percentage control | Low/High presets |
-| Preset modes | — | Normal, Sleep, Nature | Sleep, Low, High, Custom* |
+| Preset modes | — | Normal, Sleep, Nature, Custom* | Sleep, Low, High, Custom* |
 | Oscillation control | — | Yes | — |
 | Panel display on/off switch | — | Yes | Yes |
 | Filter life sensor | — | — | Yes |
 | Reset filter life button | — | — | Yes |
 
-\* H7126 Custom mode reads and reapplies the schedule already stored on the device. If its marker, modes, or durations cannot be preserved by the client's writer, the action fails before sending controls. Editing the schedule is not exposed. H7102 Custom mode is also omitted because its settings contain fields that are not fully mapped in the client.
+\* Custom mode reads and reapplies the schedule already stored on the device; configure it in the Govee app. H7102 preserves the complete settings block, including fields that are not fully mapped in the client. H7126 rejects schedules whose marker, modes, or durations cannot be preserved by the client's writer. If reading or preserving the saved settings fails, no controls are sent. Editing schedules is not exposed.
 
 ## Install
 

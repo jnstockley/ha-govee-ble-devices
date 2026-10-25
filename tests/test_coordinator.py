@@ -6,11 +6,12 @@ from time import monotonic
 import bleak_retry_connector
 import pytest
 from bleak.exc import BleakError
-from govee_ble_client import H5179Profile, H7126Mode, build_packet
+from govee_ble_client import H5179Profile, H7102WorkMode, H7126Mode, build_packet
 from govee_ble_client.exceptions import DeviceNotConnectedError
 from govee_ble_client.profiles import h7102
 
 from custom_components.govee_ble_devices import coordinator as integration
+from custom_components.govee_ble_devices.fan import GoveeBLEFan
 
 from .helpers import RadioClient, reply, use_replies
 
@@ -328,12 +329,15 @@ def encrypted(coordinator, radio, monkeypatch):
     class Transport:
         """Decoded encrypted-stream double; real H7102Client parses every frame."""
 
+        custom_replies = ()
+
         def __init__(self, connection, **kwargs):
             self.connection = connection
             self.queue = asyncio.Queue()
             self.established = False
             self.receiving = False
             self.closed = False
+            self.writes = []
             self.replies = [
                 b"bad",
                 build_packet(0xAA, 0x01, b"\x00"),
@@ -353,6 +357,10 @@ def encrypted(coordinator, radio, monkeypatch):
             self.closed = True
 
         async def write(self, frame):
+            self.writes.append(frame)
+            if frame[:3] == b"\xaa\x05\x02":
+                for item in self.custom_replies:
+                    self.queue.put_nowait(item)
             if frame[:3] == b"\xaa\x1f\x01":
                 for item in self.replies:
                     self.queue.put_nowait(item)
@@ -368,6 +376,53 @@ def encrypted(coordinator, radio, monkeypatch):
 
     monkeypatch.setattr(h7102, "GoveeAesRc4V1", Transport)
     return transports
+
+
+@pytest.mark.parametrize("powered_on", [True, False])
+async def test_h7102_custom_preset_preserves_saved_settings(
+    coordinator, radio, encrypted, monkeypatch, powered_on
+):
+    # Preserve marker, reserved bits, and duration words without reconstructing.
+    settings = bytes.fromhex("07 95 00140015 16 001e001e 08 ffffffff")
+    monkeypatch.setattr(
+        h7102.GoveeAesRc4V1,
+        "custom_replies",
+        (
+            b"bad",
+            build_packet(0xAA, 0x05, b"\x00\x01"),
+            build_packet(0xAA, 0x05, b"\x02" + settings),
+        ),
+    )
+    coordinator.data = {"power_state": powered_on}
+    coordinator._seen["power_state"] = monotonic()
+    fan = GoveeBLEFan(coordinator)
+
+    assert "Custom" in fan.preset_modes
+    await fan.async_set_preset_mode("Custom")
+
+    frames = encrypted[0].writes
+    assert frames[0][:3] == b"\xaa\x05\x02"
+    assert [frame[:3] for frame in frames[1:]] == (
+        [b"\x33\x05\x02"] if powered_on else [b"\x33\x01\x01", b"\x33\x05\x02"]
+    )
+    assert frames[-1][3:19] == settings
+    assert coordinator.data["work_mode"] is H7102WorkMode.CUSTOM
+    assert not coordinator.fresh("work_mode")
+    assert encrypted[0].closed
+    assert not radio.clients[0].is_connected
+
+
+async def test_h7102_missing_custom_reply_sends_no_controls(
+    coordinator, radio, encrypted, monkeypatch
+):
+    monkeypatch.setattr(integration, "RESPONSE_TIMEOUT", 0.02)
+    with pytest.raises(integration.UpdateFailed):
+        await coordinator.async_commands(
+            [("turn_on", ()), ("set_work_mode", (H7102WorkMode.CUSTOM,))]
+        )
+    assert [frame[:3] for frame in encrypted[0].writes] == [b"\xaa\x05\x02"]
+    assert encrypted[0].closed
+    assert not radio.clients[0].is_connected
 
 
 async def test_encrypted_read_uses_one_receiver_and_keeps_false_fields(

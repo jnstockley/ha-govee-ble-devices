@@ -12,7 +12,7 @@ from .coordinator import GoveeBLECoordinator
 from .entity import GoveeBLEEntity
 
 PRESETS = {
-    "H7102": ("Normal", "Sleep", "Nature"),
+    "H7102": ("Normal", "Sleep", "Nature", "Custom"),
     "H7126": ("Sleep", "Low", "High", "Custom"),
 }
 
