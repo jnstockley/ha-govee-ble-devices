@@ -4,14 +4,18 @@
     "step": {
       "user": {
         "title": "Select a Govee BLE device",
-        "data": {"address": "Device"}
+        "data": {
+          "address": "Device"
+        }
       },
       "confirm": {
         "title": "Add {name}?",
         "description": "This device will be added using the local Bluetooth adapter."
       }
     },
-    "error": {"device_missing": "The device is no longer available. Try again."},
+    "error": {
+      "device_missing": "The device is no longer available. Try again."
+    },
     "abort": {
       "already_configured": "This device is already configured.",
       "no_devices_found": "No new supported Govee BLE devices were found. Devices already added are hidden. Make sure any new device is nearby and a connectable Bluetooth adapter is available.",
@@ -20,13 +24,57 @@
   },
   "entity": {
     "sensor": {
-      "temperature": {"name": "Temperature"},
-      "humidity": {"name": "Humidity"},
-      "battery": {"name": "Battery"},
-      "filter_life": {"name": "Filter life"}
+      "temperature": {
+        "name": "Temperature"
+      },
+      "humidity": {
+        "name": "Humidity"
+      },
+      "battery": {
+        "name": "Battery"
+      },
+      "filter_life": {
+        "name": "Filter life"
+      }
     },
-    "fan": {"fan": {"name": "Fan"}},
-    "switch": {"display": {"name": "Display"}},
-    "button": {"reset_filter": {"name": "Reset filter life"}}
+    "fan": {
+      "fan": {
+        "name": "Fan"
+      }
+    },
+    "switch": {
+      "display": {
+        "name": "Display"
+      },
+      "custom_oscillation": {
+        "name": "Custom block {block} oscillation"
+      }
+    },
+    "button": {
+      "reset_filter": {
+        "name": "Reset filter life"
+      },
+      "apply_custom": {
+        "name": "Apply custom mode"
+      }
+    },
+    "number": {
+      "custom_speed": {
+        "name": "Custom block {block} speed"
+      },
+      "custom_duration": {
+        "name": "Custom block {block} duration"
+      }
+    },
+    "select": {
+      "custom_mode": {
+        "name": "Custom block {block} mode",
+        "state": {
+          "sleep": "Sleep",
+          "low": "Low",
+          "high": "High"
+        }
+      }
+    }
   }
 }

@@ -8,7 +8,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .coordinator import GoveeBLECoordinator
-from .entity import GoveeBLEEntity
+from .entity import GoveeBLECustomEntity, GoveeBLEEntity
 
 
 async def async_setup_entry(
@@ -17,7 +17,13 @@ async def async_setup_entry(
     """Add a panel display switch for controllable models."""
     coordinator: GoveeBLECoordinator = entry.runtime_data
     if coordinator.model in ("H7102", "H7126"):
-        async_add_entities([GoveeBLEDisplaySwitch(coordinator)])
+        entities: list[SwitchEntity] = [GoveeBLEDisplaySwitch(coordinator)]
+        if coordinator.custom_editor is not None and coordinator.model == "H7102":
+            entities.extend(
+                GoveeBLECustomSwitch(coordinator, block, "oscillation")
+                for block in range(3)
+            )
+        async_add_entities(entities)
 
 
 class GoveeBLEDisplaySwitch(GoveeBLEEntity, SwitchEntity):
@@ -37,3 +43,18 @@ class GoveeBLEDisplaySwitch(GoveeBLEEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs: object) -> None:
         await self.coordinator.async_command("set_panel_display", False)
+
+
+class GoveeBLECustomSwitch(GoveeBLECustomEntity, SwitchEntity):
+    """Local per-block oscillation flag."""
+
+    @property
+    def is_on(self) -> bool | None:
+        value = self.draft_value
+        return value if type(value) is bool else None
+
+    async def async_turn_on(self, **kwargs: object) -> None:
+        await self.async_edit(True)
+
+    async def async_turn_off(self, **kwargs: object) -> None:
+        await self.async_edit(False)
