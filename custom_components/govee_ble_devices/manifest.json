@@ -13,11 +13,6 @@
     {"local_name": "ihoment_H7102*", "connectable": true},
     {"local_name": "ihoment_H7126*", "connectable": true}
   ],
-  "categories": [
-    "climate.air_purifiers_humidifiers",
-    "climate.fans_ventilation",
-    "sensors.temperature_humidity"
-  ],
   "codeowners": ["@jnstockley"],
   "config_flow": true,
   "dependencies": ["bluetooth", "bluetooth_adapters"],
