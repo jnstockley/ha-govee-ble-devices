@@ -6,6 +6,7 @@ import argparse
 import ast
 import json
 import re
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -14,6 +15,27 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "custom_components/govee_ble_devices/manifest.json"
 HACS = ROOT / "hacs.json"
 VERSION = re.compile(r"\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?\Z")
+
+
+def validate_brand_images(brand_dir: Path) -> None:
+    """Require PNG icon headers with standard and high-DPI dimensions.
+
+    Home Assistant falls back to these icons for logo and dark variants.
+    The existing artwork works on both light and dark backgrounds.
+    """
+    for filename, size in (("icon.png", 256), ("icon@2x.png", 512)):
+        path = brand_dir / filename
+        if not path.is_file():
+            raise ValueError(f"Missing brand image: {filename}")
+        data = path.read_bytes()
+        if (
+            len(data) < 33
+            or data[:8] != b"\x89PNG\r\n\x1a\n"
+            or data[8:16] != b"\x00\x00\x00\rIHDR"
+        ):
+            raise ValueError(f"Invalid PNG header: {filename}")
+        if struct.unpack(">II", data[16:24]) != (size, size):
+            raise ValueError(f"Brand image {filename} must be {size}x{size}")
 
 
 def validate(tag: str | None = None, install_requirement: bool = False) -> str:
@@ -52,9 +74,10 @@ def validate(tag: str | None = None, install_requirement: bool = False) -> str:
         raise ValueError("hacs.json needs a name")
     if hacs["name"] != manifest["name"]:
         raise ValueError("HACS name does not match the integration name")
-    for filename in ("__init__.py", "config_flow.py", "strings.json", "brand/icon.png"):
+    for filename in ("__init__.py", "config_flow.py", "strings.json", "icons.json"):
         if not (integration_dir / filename).is_file():
             raise ValueError(f"Missing integration file: {filename}")
+    validate_brand_images(integration_dir / "brand")
     for filename in ("LICENSE", "README.md"):
         if not (ROOT / filename).is_file():
             raise ValueError(f"Missing repository file: {filename}")

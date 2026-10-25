@@ -66,6 +66,49 @@ The device must be advertising within range of a Home Assistant Bluetooth adapte
 
 HACS tracks the repository and exposes an update entity in Home Assistant. When a newer release is available, install it through the HACS update entity or HACS dashboard, then restart Home Assistant to load the new Python code. Prerelease updates are shown when prereleases are enabled for this repository. HACS handles future integration file downloads; no manual copying is needed. [HACS update entity documentation](https://www.hacs.xyz/docs/use/entities/update/)
 
+### Icons and logos
+
+The integration ships its brand icon in `brand/icon.png` (256×256)
+and `brand/icon@2x.png` (512×512). Home Assistant 2026.3 and newer serves these
+locally for integration setup, integration pages, and other brand displays.
+Logo and dark-theme requests fall back to the same artwork, which works on
+both backgrounds. Separate duplicate logo files are unnecessary. See
+[Home Assistant branding documentation](https://contributors.home-assistant.io/core/integrations/brands/).
+
+Entity controls use function-specific icons (filter, display, oscillation,
+schedule duration, speed, mode, and Apply). Temperature, humidity, battery,
+and the fan use Home Assistant's built-in device-class/platform icons.
+Restart Home Assistant after installing an update to load icon metadata, and
+refresh the browser if it still shows cached icons.
+
+Some HACS versions still request custom integration images from the public
+brands CDN instead of Home Assistant's local brand API. This causes the
+"icon not available" image in the HACS dashboard and its update entity even
+when the integration's local images work. This is tracked upstream in
+[hacs/integration#5223](https://github.com/hacs/integration/issues/5223) and
+[hacs/integration#5402](https://github.com/hacs/integration/issues/5402).
+Keep HACS up to date; adding an image URL to `hacs.json` does not change those
+requests.
+
+For the **update entity only**, a supported temporary workaround is to copy
+`custom_components/govee_ble_devices/brand/icon.png` to
+`/config/www/govee_ble_devices/icon.png` (create the directories), then merge
+this into `configuration.yaml` under your existing `homeassistant:` section:
+
+```yaml
+homeassistant:
+  customize:
+    update.govee_ble_devices_update:  # Replace with your actual HACS update entity ID.
+      entity_picture: /local/govee_ble_devices/icon.png
+```
+
+Restart Home Assistant after changing the configuration. Find the actual entity
+ID under **Settings → Devices & services → Entities**. This uses Home Assistant's
+[entity customization](https://www.home-assistant.io/docs/configuration/customizing-entities/)
+and keeps the image local. It fixes the picture on update cards/dialogs that use
+the entity picture; it does not change the HACS dashboard's independent image
+requests. Remove the customization once your HACS version supports local brands.
+
 ## Data and availability
 
 The integration polls every 90 seconds by default. To change one device's interval, open **Settings → Devices & services → Govee BLE Devices**, select the configure/options gear for that device's integration entry, and set **Polling interval** to a whole number from **5 to 3600 seconds**. Each device has its own saved interval; existing entries stay at 90 seconds until changed. Saving a changed interval reloads only that entry, with no Home Assistant restart required. This is an integration setting and does not create an entity. Shorter intervals help pick up changes made through the mobile app or physical controls sooner, but increase Bluetooth activity and battery use, especially for the H5179 sensor. The interval is a scheduling setting, not a guarantee of update latency: connection, read, and cleanup time also contribute.
