@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections import deque
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from time import monotonic
@@ -65,6 +66,10 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.address: str = entry.data[CONF_ADDRESS]
         self.model: str = entry.data[CONF_MODEL]
         self._lock = asyncio.Lock()
+        self._admission = asyncio.Condition(self._lock)
+        self._active_transaction = False
+        self._control_waiters: deque[object] = deque()
+        self._read_waiters: deque[object] = deque()
         self._seen: dict[str, float] = {}
         self._verify_generation = 0
         self._sessions: list[_Session] = []
@@ -94,31 +99,62 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.hass, self.address, connectable=True
         )
 
+    @contextmanager
+    def _timing(self, phase: str, operation: str = "session") -> Iterator[None]:
+        """Measure elapsed phases without logging commands or backend error text."""
+        started = monotonic()
+        outcome = "ok"
+        try:
+            yield
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        except BaseException:
+            outcome = "failed"
+            raise
+        finally:
+            elapsed = monotonic() - started
+            _LOGGER.debug(
+                "BLE timing model=%s operation=%s phase=%s elapsed=%.3fs outcome=%s",
+                self.model,
+                operation,
+                phase,
+                elapsed,
+                outcome,
+                extra={
+                    "govee_phase": phase,
+                    "govee_operation": operation,
+                    "govee_elapsed": elapsed,
+                    "govee_outcome": outcome,
+                },
+            )
+
     async def _cleanup(self, session: _Session) -> None:
         """Close encryption before GATT; retain failed handles for another try."""
-        error: Exception | None = None
-        if session.encrypted is not None:
-            try:
-                await session.encrypted.close()
-                session.encrypted = None
-            except Exception as err:  # noqa: BLE001 - retain all backend cleanup failures
-                error = err
-        if session.connection is not None:
-            try:
-                await session.connection.disconnect()
-                session.connection = None
-            except Exception as err:  # noqa: BLE001 - retain all backend cleanup failures
-                error = err
-        if session.partial_client is not None:
-            try:
-                async with asyncio.timeout(10):
-                    await session.partial_client.disconnect()
-                session.partial_client = None
-            except Exception as err:  # noqa: BLE001 - retain all backend cleanup failures
-                error = err
-        if error is not None:
-            raise error
-        self._sessions.remove(session)
+        with self._timing("cleanup"):
+            error: Exception | None = None
+            if session.encrypted is not None:
+                try:
+                    await session.encrypted.close()
+                    session.encrypted = None
+                except Exception as err:  # noqa: BLE001 - retain all backend cleanup failures
+                    error = err
+            if session.connection is not None:
+                try:
+                    await session.connection.disconnect()
+                    session.connection = None
+                except Exception as err:  # noqa: BLE001 - retain all backend cleanup failures
+                    error = err
+            if session.partial_client is not None:
+                try:
+                    async with asyncio.timeout(10):
+                        await session.partial_client.disconnect()
+                    session.partial_client = None
+                except Exception as err:  # noqa: BLE001 - retain all backend cleanup failures
+                    error = err
+            if error is not None:
+                raise error
+            self._sessions.remove(session)
 
     @asynccontextmanager
     async def _session(
@@ -176,19 +212,12 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 connector=connector,
                 device_resolver=self._resolve_device,
             )
-            started = monotonic()
-            await connection.connect()
-            _LOGGER.debug(
-                "GATT setup model=%s elapsed=%.3fs", self.model, monotonic() - started
-            )
+            with self._timing("gatt_setup"):
+                await connection.connect()
             if self.model == "H7102":
                 session.encrypted = H7102Client(connection)
-                await session.encrypted.connect()
-                _LOGGER.debug(
-                    "Encrypted setup model=%s elapsed=%.3fs",
-                    self.model,
-                    monotonic() - started,
-                )
+                with self._timing("encrypted_setup"):
+                    await session.encrypted.connect()
             yield connection, session.encrypted
         except BaseException:
             try:
@@ -202,19 +231,45 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._cleanup(session)
 
     @asynccontextmanager
-    async def _transaction(self) -> AsyncIterator[None]:
-        """Track even queued operations so unload can cancel and await them."""
-        if self._closing:
-            raise UpdateFailed("Govee BLE device is shutting down")
-        task = asyncio.current_task()
-        self._operations.add(task)
-        try:
-            async with self._lock:
-                if self._closing:
-                    raise UpdateFailed("Govee BLE device is shutting down")
+    async def _transaction(self, *, control: bool = False) -> AsyncIterator[None]:
+        """Serialize complete transactions, admitting queued controls before reads."""
+        operation = "control" if control else "read"
+        with self._timing("transaction", operation):
+            if self._closing:
+                raise UpdateFailed("Govee BLE device is shutting down")
+            task = asyncio.current_task()
+            self._operations.add(task)
+            admitted = False
+            try:
+                with self._timing("queue", operation):
+                    async with self._admission:
+                        queue = self._control_waiters if control else self._read_waiters
+                        token = object()
+                        queue.append(token)
+                        try:
+                            await self._admission.wait_for(
+                                lambda: (
+                                    self._closing
+                                    or (
+                                        not self._active_transaction
+                                        and queue[0] is token
+                                        and (control or not self._control_waiters)
+                                    )
+                                )
+                            )
+                        finally:
+                            queue.remove(token)
+                            self._admission.notify_all()
+                        if self._closing:
+                            raise UpdateFailed("Govee BLE device is shutting down")
+                        self._active_transaction = admitted = True
                 yield
-        finally:
-            self._operations.discard(task)
+            finally:
+                if admitted:
+                    async with self._admission:
+                        self._active_transaction = False
+                        self._admission.notify_all()
+                self._operations.discard(task)
 
     async def async_shutdown(self) -> None:
         """Stop admission, await owned work, and retry retained BLE teardown."""
@@ -380,40 +435,45 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Submit controls once; transport completion is provisional until readback."""
         if not commands:
             return
-        async with self._transaction():
+        async with self._transaction(control=True):
             try:
                 async with self._session() as (connection, client):
-                    if client is not None:
-                        custom_command = ("set_work_mode", (H7102WorkMode.CUSTOM,))
-                        custom = None
-                        if custom_command in commands:
-                            custom = await self._saved_h7102_custom(client)
-                        for index, (command, args) in enumerate(commands):
-                            if index:
-                                await asyncio.sleep(0.1)
-                            if (command, args) == custom_command:
-                                await client.set_custom_settings(custom)
-                            else:
-                                await getattr(client, command)(*args)
-                    elif self.model == "H7126":
-                        profile = H7126Profile()
-                        custom = None
-                        if any(command == "set_custom_mode" for command, _ in commands):
-                            custom = await self._saved_custom(connection, profile)
-                        for index, (command, args) in enumerate(commands):
-                            if index:
-                                await asyncio.sleep(0.1)
-                            if command == "set_custom_mode":
-                                await profile.set_custom_schedule(connection, custom)
-                            else:
-                                await getattr(profile, command)(connection, *args)
-                        # Write-without-response completion can mean only queued
-                        # locally. Immediate Core Bluetooth teardown drops the
-                        # final control; allow it to transmit before disconnect.
-                        # This is not confirmation: readback still owns truth.
-                        await asyncio.sleep(H7126_COMMAND_SETTLE_DELAY)
-                    else:
-                        raise ValueError("This device has no controls")
+                    with self._timing("controls", "control"):
+                        if client is not None:
+                            custom_command = ("set_work_mode", (H7102WorkMode.CUSTOM,))
+                            custom = None
+                            if custom_command in commands:
+                                custom = await self._saved_h7102_custom(client)
+                            for index, (command, args) in enumerate(commands):
+                                if index:
+                                    await asyncio.sleep(0.1)
+                                if (command, args) == custom_command:
+                                    await client.set_custom_settings(custom)
+                                else:
+                                    await getattr(client, command)(*args)
+                        elif self.model == "H7126":
+                            profile = H7126Profile()
+                            custom = None
+                            if any(
+                                command == "set_custom_mode" for command, _ in commands
+                            ):
+                                custom = await self._saved_custom(connection, profile)
+                            for index, (command, args) in enumerate(commands):
+                                if index:
+                                    await asyncio.sleep(0.1)
+                                if command == "set_custom_mode":
+                                    await profile.set_custom_schedule(
+                                        connection, custom
+                                    )
+                                else:
+                                    await getattr(profile, command)(connection, *args)
+                            # Write-without-response completion can mean only queued
+                            # locally. Immediate Core Bluetooth teardown drops the
+                            # final control; allow it to transmit before disconnect.
+                            # This is not confirmation: readback still owns truth.
+                            await asyncio.sleep(H7126_COMMAND_SETTLE_DELAY)
+                        else:
+                            raise ValueError("This device has no controls")
             except (
                 BleakError,
                 GoveeBLEError,

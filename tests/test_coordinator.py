@@ -1,7 +1,9 @@
 """Regression tests for integration-owned BLE transactions, without RF I/O."""
 
 import asyncio
+import logging
 from time import monotonic
+from types import SimpleNamespace
 
 import bleak_retry_connector
 import pytest
@@ -436,6 +438,219 @@ async def test_encrypted_read_uses_one_receiver_and_keeps_false_fields(
     assert values["work_mode"].value == "normal"
     assert encrypted[0].closed
     assert not radio.clients[0].is_connected
+
+
+@pytest.fixture
+def paused_encrypted(encrypted, monkeypatch):
+    """Hold the first real-client query at the simulated radio boundary."""
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original = h7102.GoveeAesRc4V1.write
+
+    async def write(self, frame):
+        if not entered.is_set():
+            entered.set()
+            await release.wait()
+        await original(self, frame)
+
+    monkeypatch.setattr(h7102.GoveeAesRc4V1, "write", write)
+    monkeypatch.setattr(integration, "COMMAND_VERIFY_DELAY", 60)
+    return SimpleNamespace(entered=entered, release=release, transports=encrypted)
+
+
+async def test_controls_overtake_queued_read_and_preserve_control_order(
+    coordinator, paused_encrypted
+):
+    active = asyncio.create_task(coordinator._async_update_data())
+    await asyncio.wait_for(paused_encrypted.entered.wait(), 1)
+    queued_read = asyncio.create_task(coordinator._async_update_data())
+    await asyncio.sleep(0)
+    first_control = asyncio.create_task(coordinator.async_command("turn_off"))
+    await asyncio.sleep(0)
+    second_control = asyncio.create_task(coordinator.async_command("turn_on"))
+    await asyncio.sleep(0)
+    assert len(paused_encrypted.transports) == 1
+    assert not active.done()
+    paused_encrypted.release.set()
+    await asyncio.wait_for(
+        asyncio.gather(active, queued_read, first_control, second_control), 3
+    )
+    assert [transport.writes[0][:3] for transport in paused_encrypted.transports] == [
+        b"\xaa\x01\x00",  # Active poll completes before any controls.
+        b"\x33\x01\x00",  # Earlier control stays first.
+        b"\x33\x01\x01",
+        b"\xaa\x01\x00",  # Queued poll runs after both controls.
+    ]
+    assert all(transport.closed for transport in paused_encrypted.transports)
+
+
+@pytest.mark.parametrize("cancel_active", [False, True])
+async def test_cancelled_transaction_does_not_strand_queued_read(
+    coordinator, paused_encrypted, cancel_active
+):
+    active = asyncio.create_task(coordinator._async_update_data())
+    await asyncio.wait_for(paused_encrypted.entered.wait(), 1)
+    control = asyncio.create_task(coordinator.async_command("turn_off"))
+    queued_read = asyncio.create_task(coordinator._async_update_data())
+    await asyncio.sleep(0)
+    cancelled = active if cancel_active else control
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+    paused_encrypted.release.set()
+    await asyncio.wait_for(
+        asyncio.gather(
+            *(task for task in (active, control, queued_read) if task is not cancelled)
+        ),
+        3,
+    )
+    assert queued_read.result()["fan_speed"] == 5
+    assert not coordinator._operations
+    assert all(transport.closed for transport in paused_encrypted.transports)
+
+
+async def test_shutdown_cancels_active_and_both_queued_transaction_classes(
+    coordinator, paused_encrypted
+):
+    active = asyncio.create_task(coordinator._async_update_data())
+    await asyncio.wait_for(paused_encrypted.entered.wait(), 1)
+    control = asyncio.create_task(coordinator.async_command("turn_off"))
+    read = asyncio.create_task(coordinator._async_update_data())
+    await asyncio.sleep(0)
+    await asyncio.wait_for(coordinator.async_shutdown(), 1)
+    assert all(task.cancelled() for task in (active, control, read))
+    assert not coordinator._operations
+    assert not coordinator._sessions
+
+
+async def test_busy_device_does_not_block_another_device(coordinator, paused_encrypted):
+    active = asyncio.create_task(coordinator._async_update_data())
+    await asyncio.wait_for(paused_encrypted.entered.wait(), 1)
+    other = integration.GoveeBLECoordinator(coordinator.hass, coordinator.config_entry)
+    other.model = "H7102"
+    try:
+        await asyncio.wait_for(other.async_command("turn_off"), 0.5)
+        assert not active.done()
+        assert paused_encrypted.transports[1].writes[0][:3] == b"\x33\x01\x00"
+    finally:
+        await other.async_shutdown()
+        paused_encrypted.release.set()
+        await active
+
+
+async def test_latency_timings_separate_setup_control_and_cleanup(
+    coordinator, encrypted, monkeypatch, caplog
+):
+    clock = [0.0]
+    monkeypatch.setattr(integration, "monotonic", lambda: clock[0])
+    establish = integration.establish_connection
+    connect = h7102.GoveeAesRc4V1.connect
+    close = h7102.GoveeAesRc4V1.close
+
+    async def timed_establish(*args, **kwargs):
+        result = await establish(*args, **kwargs)
+        clock[0] += 2.0
+        return result
+
+    async def timed_connect(self, **kwargs):
+        await connect(self, **kwargs)
+        clock[0] += 3.0
+
+    async def timed_close(self):
+        await close(self)
+        clock[0] += 1.0
+
+    monkeypatch.setattr(integration, "establish_connection", timed_establish)
+    monkeypatch.setattr(h7102.GoveeAesRc4V1, "connect", timed_connect)
+    monkeypatch.setattr(h7102.GoveeAesRc4V1, "close", timed_close)
+    with caplog.at_level(logging.DEBUG, logger=integration.__name__):
+        await coordinator.async_command("turn_off")
+    timings = {
+        record.govee_phase: (record.govee_elapsed, record.govee_outcome)
+        for record in caplog.records
+        if hasattr(record, "govee_phase")
+    }
+    assert timings == {
+        "queue": (0.0, "ok"),
+        "gatt_setup": (2.0, "ok"),
+        "encrypted_setup": (3.0, "ok"),
+        "controls": (0.0, "ok"),
+        "cleanup": (1.0, "ok"),
+        "transaction": (6.0, "ok"),
+    }
+    assert coordinator.address not in caplog.text
+
+
+async def test_latency_timing_includes_command_queue_wait(
+    coordinator, paused_encrypted, monkeypatch, caplog
+):
+    clock = [0.0]
+    monkeypatch.setattr(integration, "monotonic", lambda: clock[0])
+    with caplog.at_level(logging.DEBUG, logger=integration.__name__):
+        active = asyncio.create_task(coordinator.async_command("turn_on"))
+        await asyncio.wait_for(paused_encrypted.entered.wait(), 1)
+        control = asyncio.create_task(coordinator.async_command("turn_off"))
+        await asyncio.sleep(0)
+        clock[0] = 5.0
+        paused_encrypted.release.set()
+        await asyncio.wait_for(asyncio.gather(active, control), 2)
+    queue_records = [
+        record
+        for record in caplog.records
+        if getattr(record, "govee_phase", None) == "queue"
+        and record.govee_operation == "control"
+    ]
+    assert [record.govee_elapsed for record in queue_records] == [0.0, 5.0]
+
+
+@pytest.mark.parametrize(
+    "stage", ["gatt_setup", "encrypted_setup", "controls", "cleanup"]
+)
+async def test_failed_latency_phase_omits_private_exception_text(
+    coordinator, encrypted, monkeypatch, caplog, stage
+):
+    async def fail(*args, **kwargs):
+        raise OSError("PRIVATE_PACKET_AND_ADDRESS")
+
+    target, name = {
+        "gatt_setup": (integration, "establish_connection"),
+        "encrypted_setup": (h7102.GoveeAesRc4V1, "connect"),
+        "controls": (h7102.GoveeAesRc4V1, "write"),
+        "cleanup": (RadioClient, "disconnect"),
+    }[stage]
+    with (
+        caplog.at_level(logging.DEBUG, logger=integration.__name__),
+        monkeypatch.context() as patch,
+    ):
+        patch.setattr(target, name, fail)
+        with pytest.raises(integration.UpdateFailed):
+            await coordinator.async_command("turn_off")
+    failures = {
+        record.govee_phase
+        for record in caplog.records
+        if getattr(record, "govee_outcome", None) == "failed"
+    }
+    assert {stage, "transaction"} <= failures
+    assert "PRIVATE_PACKET_AND_ADDRESS" not in caplog.text
+    assert coordinator.address not in caplog.text
+
+
+async def test_cancelled_latency_phase_is_recorded(
+    coordinator, paused_encrypted, caplog
+):
+    with caplog.at_level(logging.DEBUG, logger=integration.__name__):
+        command = asyncio.create_task(coordinator.async_command("turn_off"))
+        await asyncio.wait_for(paused_encrypted.entered.wait(), 1)
+        command.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await command
+    cancelled = {
+        record.govee_phase
+        for record in caplog.records
+        if getattr(record, "govee_outcome", None) == "cancelled"
+    }
+    assert {"controls", "transaction"} <= cancelled
+    assert paused_encrypted.transports[0].closed
 
 
 async def test_encrypted_read_retains_partial_state_on_missing_optional_reply(
