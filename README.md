@@ -46,6 +46,16 @@ A failed poll marks the device's entities unavailable; individual fields also be
 
 These choices follow the beta's [application guide](https://github.com/jnstockley/govee_ble_client/blob/v1.0.0b3/docs/APP_INTEGRATION.md) and [BLE review](https://github.com/jnstockley/govee_ble_client/blob/v1.0.0b3/docs/BLE_BEST_PRACTICES.md). Brief sessions conserve slots but require another connection and, for H7102, another handshake for each transaction. Persistent sessions and shorter pacing require measurements on the target adapters before adoption.
 
+Consecutive H7102 speed-only requests that arrive before a write is submitted
+share a single transaction. The newest live target is selected after connection
+and encryption setup; superseded requests complete with that shared write's
+result. This avoids reconnecting for every intermediate or duplicate HomeKit
+slider request. Power, preset, oscillation, display, and composite commands
+preserve their ordering and separate speed batches. A request arriving after
+submission starts a new transaction. Cancelling a queued request removes its
+target; a failed or cancelled writer fails its followers without replaying the
+write. Readback remains authoritative.
+
 Enable debug logging from the integration's Home Assistant device/service page, or configure:
 
 ```yaml

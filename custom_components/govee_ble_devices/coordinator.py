@@ -7,7 +7,7 @@ import logging
 from collections import deque
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from time import monotonic
 from typing import Any
@@ -52,6 +52,16 @@ class _Session:
     partial_client: Any = None
 
 
+@dataclass
+class _SpeedBatch:
+    """Live speed targets sharing one unsent write and its eventual outcome."""
+
+    targets: dict[object, int] = field(default_factory=dict)
+    sealed: bool = False
+    done: bool = False
+    error: BaseException | None = None
+
+
 class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """A single connection owner for one physical Govee device."""
 
@@ -77,6 +87,7 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._operations: set[asyncio.Task] = set()
         self._verify_task: asyncio.Task | None = None
         self._shutdown_lock = asyncio.Lock()
+        self._pending_speed: _SpeedBatch | None = None
 
     def fresh(self, key: str) -> bool:
         """Whether a field was decoded from a recent valid reply."""
@@ -438,73 +449,122 @@ class GoveeBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.async_commands([(command, args)])
 
     async def async_commands(self, commands: list[tuple[str, tuple[Any, ...]]]) -> None:
-        """Submit controls once; transport completion is provisional until readback."""
+        """Coalesce unsent speed targets; serialize all controls without replay."""
         if not commands:
             return
-        async with self._transaction(control=True):
-            try:
-                async with self._session() as (connection, client):
-                    with self._timing("controls", "control"):
-                        if client is not None:
-                            custom_command = ("set_work_mode", (H7102WorkMode.CUSTOM,))
-                            custom = None
-                            if custom_command in commands:
-                                custom = await self._saved_h7102_custom(client)
-                            for index, (command, args) in enumerate(commands):
-                                if index:
-                                    await asyncio.sleep(0.1)
-                                if (command, args) == custom_command:
-                                    await client.set_custom_settings(custom)
-                                else:
-                                    await getattr(client, command)(*args)
-                                if command == "set_fan_speed":
-                                    _LOGGER.debug(
-                                        "Fan speed submitted model=%s speed=%s",
-                                        self.model,
-                                        args[0],
-                                    )
-                        elif self.model == "H7126":
-                            profile = H7126Profile()
-                            custom = None
-                            if any(
-                                command == "set_custom_mode" for command, _ in commands
-                            ):
-                                custom = await self._saved_custom(connection, profile)
-                            for index, (command, args) in enumerate(commands):
-                                if index:
-                                    await asyncio.sleep(0.1)
-                                if command == "set_custom_mode":
-                                    await profile.set_custom_schedule(
-                                        connection, custom
-                                    )
-                                else:
-                                    await getattr(profile, command)(connection, *args)
-                            # Write-without-response completion can mean only queued
-                            # locally. Immediate Core Bluetooth teardown drops the
-                            # final control; allow it to transmit before disconnect.
-                            # This is not confirmation: readback still owns truth.
-                            await asyncio.sleep(H7126_COMMAND_SETTLE_DELAY)
-                        else:
-                            raise ValueError("This device has no controls")
-            except (
-                BleakError,
-                GoveeBLEError,
-                OSError,
-                TimeoutError,
-                ValueError,
-                RuntimeError,
-            ) as err:
-                # A failed transport write may already have reached the device.
-                # Request observations; never replay the control automatically.
-                self._schedule_verification()
-                raise UpdateFailed("Could not send Govee BLE command") from err
-            updates = self._command_updates(commands)
-            if updates:
-                # Preserve observed ages and availability; a write cannot revive
-                # an unavailable device or establish a fresh observation.
-                self.data = {**(self.data or {}), **updates}
-                self.async_update_listeners()
+        batch = None
+        token = object()
+        if (
+            self.model == "H7102"
+            and len(commands) == 1
+            and commands[0][0] == "set_fan_speed"
+            and len(commands[0][1]) == 1
+            and type(speed := commands[0][1][0]) is int
+            and 1 <= speed <= 8
+        ):
+            batch = self._pending_speed
+            if batch is None or batch.sealed or batch.done:
+                batch = self._pending_speed = _SpeedBatch()
+            batch.targets[token] = speed
+        else:
+            # Never replace a speed target across a power, mode, or other control.
+            self._pending_speed = None
+        try:
+            async with self._transaction(control=True):
+                if batch is not None and batch.done:
+                    if batch.error is not None:
+                        raise UpdateFailed(
+                            "Shared fan speed write failed"
+                        ) from batch.error
+                    return
+                try:
+                    await self._execute_commands(commands, batch)
+                except BaseException as err:
+                    if batch is not None:
+                        batch.error = err
+                    raise
+                finally:
+                    if batch is not None:
+                        batch.done = True
+        finally:
+            if batch is not None:
+                batch.targets.pop(token)
+                if self._pending_speed is batch and (batch.done or not batch.targets):
+                    self._pending_speed = None
+
+    async def _execute_commands(
+        self,
+        commands: list[tuple[str, tuple[Any, ...]]],
+        batch: _SpeedBatch | None,
+    ) -> None:
+        """Execute under transaction ownership; select the latest target after setup."""
+        try:
+            async with self._session() as (connection, client):
+                if batch is not None:
+                    # Freeze immediately before submission. Later requests must
+                    # get a new batch, even while this session is cleaning up.
+                    batch.sealed = True
+                    if self._pending_speed is batch:
+                        self._pending_speed = None
+                    target = batch.targets[next(reversed(batch.targets))]
+                    commands = [("set_fan_speed", (target,))]
+                with self._timing("controls", "control"):
+                    if client is not None:
+                        custom_command = ("set_work_mode", (H7102WorkMode.CUSTOM,))
+                        custom = None
+                        if custom_command in commands:
+                            custom = await self._saved_h7102_custom(client)
+                        for index, (command, args) in enumerate(commands):
+                            if index:
+                                await asyncio.sleep(0.1)
+                            if (command, args) == custom_command:
+                                await client.set_custom_settings(custom)
+                            else:
+                                await getattr(client, command)(*args)
+                            if command == "set_fan_speed":
+                                _LOGGER.debug(
+                                    "Fan speed submitted model=%s speed=%s",
+                                    self.model,
+                                    args[0],
+                                )
+                    elif self.model == "H7126":
+                        profile = H7126Profile()
+                        custom = None
+                        if any(command == "set_custom_mode" for command, _ in commands):
+                            custom = await self._saved_custom(connection, profile)
+                        for index, (command, args) in enumerate(commands):
+                            if index:
+                                await asyncio.sleep(0.1)
+                            if command == "set_custom_mode":
+                                await profile.set_custom_schedule(connection, custom)
+                            else:
+                                await getattr(profile, command)(connection, *args)
+                        # Write-without-response completion can mean only queued
+                        # locally. Immediate Core Bluetooth teardown drops the
+                        # final control; allow it to transmit before disconnect.
+                        # This is not confirmation: readback still owns truth.
+                        await asyncio.sleep(H7126_COMMAND_SETTLE_DELAY)
+                    else:
+                        raise ValueError("This device has no controls")
+        except (
+            BleakError,
+            GoveeBLEError,
+            OSError,
+            TimeoutError,
+            ValueError,
+            RuntimeError,
+        ) as err:
+            # A failed transport write may already have reached the device.
+            # Request observations; never replay the control automatically.
             self._schedule_verification()
+            raise UpdateFailed("Could not send Govee BLE command") from err
+        updates = self._command_updates(commands)
+        if updates:
+            # Preserve observed ages and availability; a write cannot revive
+            # an unavailable device or establish a fresh observation.
+            self.data = {**(self.data or {}), **updates}
+            self.async_update_listeners()
+        self._schedule_verification()
 
     async def _saved_h7102_custom(self, client: H7102Client) -> bytes:
         """Read the saved block before any controls, preserving unknown fields."""

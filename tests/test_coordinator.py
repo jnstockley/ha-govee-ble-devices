@@ -441,6 +441,210 @@ async def test_encrypted_read_uses_one_receiver_and_keeps_false_fields(
 
 
 @pytest.fixture
+def paused_encrypted_setup(encrypted, monkeypatch):
+    """Allow new user targets to arrive while the first handshake is pending."""
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original = h7102.GoveeAesRc4V1.connect
+
+    async def connect(self, **kwargs):
+        if not entered.is_set():
+            entered.set()
+            await release.wait()
+        await original(self, **kwargs)
+
+    monkeypatch.setattr(h7102.GoveeAesRc4V1, "connect", connect)
+    monkeypatch.setattr(integration, "COMMAND_VERIFY_DELAY", 60)
+    return SimpleNamespace(entered=entered, release=release, transports=encrypted)
+
+
+async def test_speed_burst_during_setup_submits_only_latest_target(
+    coordinator, paused_encrypted_setup
+):
+    first = asyncio.create_task(coordinator.async_command("set_fan_speed", 8))
+    await asyncio.wait_for(paused_encrypted_setup.entered.wait(), 1)
+    second = asyncio.create_task(coordinator.async_command("set_fan_speed", 4))
+    duplicate = asyncio.create_task(coordinator.async_command("set_fan_speed", 4))
+    await asyncio.sleep(0)
+    paused_encrypted_setup.release.set()
+    await asyncio.wait_for(asyncio.gather(first, second, duplicate), 2)
+    assert len(paused_encrypted_setup.transports) == 1
+    assert [frame[:4] for frame in paused_encrypted_setup.transports[0].writes] == [
+        b"\x33\x05\x01\x04"
+    ]
+    assert coordinator.data["fan_speed"] == 4
+    assert coordinator._verify_generation == 1
+    assert not coordinator.fresh("fan_speed")
+
+
+async def test_queued_speed_burst_uses_one_write_after_active_read(
+    coordinator, paused_encrypted
+):
+    read = asyncio.create_task(coordinator._async_update_data())
+    await asyncio.wait_for(paused_encrypted.entered.wait(), 1)
+    speeds = [
+        asyncio.create_task(coordinator.async_command("set_fan_speed", speed))
+        for speed in (8, 5, 4)
+    ]
+    await asyncio.sleep(0)
+    paused_encrypted.release.set()
+    await asyncio.wait_for(asyncio.gather(read, *speeds), 2)
+    assert len(paused_encrypted.transports) == 2
+    assert [frame[:4] for frame in paused_encrypted.transports[1].writes] == [
+        b"\x33\x05\x01\x04"
+    ]
+
+
+@pytest.mark.parametrize("cancel_index,expected_speed", [(0, 4), (2, 5)])
+async def test_cancelled_queued_speed_leaves_other_batch_callers_live(
+    coordinator, paused_encrypted, cancel_index, expected_speed
+):
+    read = asyncio.create_task(coordinator._async_update_data())
+    await asyncio.wait_for(paused_encrypted.entered.wait(), 1)
+    speeds = [
+        asyncio.create_task(coordinator.async_command("set_fan_speed", speed))
+        for speed in (8, 5, 4)
+    ]
+    await asyncio.sleep(0)
+    speeds[cancel_index].cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await speeds[cancel_index]
+    paused_encrypted.release.set()
+    await asyncio.wait_for(
+        asyncio.gather(read, *(task for task in speeds if not task.cancelled())), 2
+    )
+    assert len(paused_encrypted.transports) == 2
+    assert paused_encrypted.transports[1].writes[0][:4] == bytes(
+        (0x33, 0x05, 0x01, expected_speed)
+    )
+    assert not coordinator._operations
+
+
+@pytest.mark.parametrize(
+    "command,args,frame",
+    [
+        ("turn_off", (), b"\x33\x01\x00"),
+        ("set_work_mode", (H7102WorkMode.SLEEP,), b"\x33\x05\x05"),
+        ("set_oscillation", (True,), b"\x33\x1f\x01"),
+    ],
+)
+async def test_speed_batch_does_not_cross_other_control_requests(
+    coordinator, paused_encrypted_setup, command, args, frame
+):
+    first = asyncio.create_task(coordinator.async_command("set_fan_speed", 8))
+    await asyncio.wait_for(paused_encrypted_setup.entered.wait(), 1)
+    barrier = asyncio.create_task(coordinator.async_command(command, *args))
+    await asyncio.sleep(0)
+    last = asyncio.create_task(coordinator.async_command("set_fan_speed", 4))
+    await asyncio.sleep(0)
+    paused_encrypted_setup.release.set()
+    await asyncio.wait_for(asyncio.gather(first, barrier, last), 2)
+    transports = paused_encrypted_setup.transports
+    assert len(transports) == 3
+    assert transports[0].writes[0][:4] == b"\x33\x05\x01\x08"
+    assert transports[1].writes[0][:3] == frame
+    assert transports[2].writes[0][:4] == b"\x33\x05\x01\x04"
+
+
+async def test_cancelled_newest_queued_speed_cannot_replace_live_target(
+    coordinator, paused_encrypted_setup
+):
+    first = asyncio.create_task(coordinator.async_command("set_fan_speed", 8))
+    await asyncio.wait_for(paused_encrypted_setup.entered.wait(), 1)
+    cancelled = asyncio.create_task(coordinator.async_command("set_fan_speed", 4))
+    await asyncio.sleep(0)
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+    paused_encrypted_setup.release.set()
+    await asyncio.wait_for(first, 1)
+    assert paused_encrypted_setup.transports[0].writes[0][:4] == b"\x33\x05\x01\x08"
+    assert len(paused_encrypted_setup.transports) == 1
+    assert not coordinator._operations
+
+
+async def test_cancelled_speed_writer_does_not_retry_for_queued_followers(
+    coordinator, paused_encrypted_setup
+):
+    first = asyncio.create_task(coordinator.async_command("set_fan_speed", 8))
+    await asyncio.wait_for(paused_encrypted_setup.entered.wait(), 1)
+    follower = asyncio.create_task(coordinator.async_command("set_fan_speed", 4))
+    await asyncio.sleep(0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    paused_encrypted_setup.release.set()
+    with pytest.raises(integration.UpdateFailed):
+        await asyncio.wait_for(follower, 1)
+    assert len(paused_encrypted_setup.transports) == 1
+    assert not paused_encrypted_setup.transports[0].writes
+    assert not coordinator._sessions
+
+
+async def test_ambiguous_speed_batch_write_fails_all_followers_without_replay(
+    coordinator, paused_encrypted_setup, monkeypatch
+):
+    original = h7102.GoveeAesRc4V1.write
+
+    async def fail(self, frame):
+        await original(self, frame)
+        raise OSError("May have reached the fan")
+
+    monkeypatch.setattr(h7102.GoveeAesRc4V1, "write", fail)
+    first = asyncio.create_task(coordinator.async_command("set_fan_speed", 8))
+    await asyncio.wait_for(paused_encrypted_setup.entered.wait(), 1)
+    follower = asyncio.create_task(coordinator.async_command("set_fan_speed", 4))
+    await asyncio.sleep(0)
+    paused_encrypted_setup.release.set()
+    results = await asyncio.wait_for(
+        asyncio.gather(first, follower, return_exceptions=True), 1
+    )
+    assert all(isinstance(result, integration.UpdateFailed) for result in results)
+    assert len(paused_encrypted_setup.transports) == 1
+    assert len(paused_encrypted_setup.transports[0].writes) == 1
+    assert coordinator._verify_task is not None
+
+
+async def test_speed_request_after_submission_starts_a_new_write(
+    coordinator, encrypted, monkeypatch
+):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original = h7102.GoveeAesRc4V1.close
+
+    async def close(self):
+        if not entered.is_set():
+            entered.set()
+            await release.wait()
+        await original(self)
+
+    monkeypatch.setattr(h7102.GoveeAesRc4V1, "close", close)
+    first = asyncio.create_task(coordinator.async_command("set_fan_speed", 8))
+    await asyncio.wait_for(entered.wait(), 1)
+    second = asyncio.create_task(coordinator.async_command("set_fan_speed", 4))
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.wait_for(asyncio.gather(first, second), 1)
+    assert [transport.writes[0][:4] for transport in encrypted] == [
+        b"\x33\x05\x01\x08",
+        b"\x33\x05\x01\x04",
+    ]
+
+
+async def test_shutdown_cancels_all_speed_batch_callers(
+    coordinator, paused_encrypted_setup
+):
+    first = asyncio.create_task(coordinator.async_command("set_fan_speed", 8))
+    await asyncio.wait_for(paused_encrypted_setup.entered.wait(), 1)
+    follower = asyncio.create_task(coordinator.async_command("set_fan_speed", 4))
+    await asyncio.sleep(0)
+    await asyncio.wait_for(coordinator.async_shutdown(), 1)
+    assert first.cancelled() and follower.cancelled()
+    assert not coordinator._sessions
+    assert not coordinator._operations
+
+
+@pytest.fixture
 def paused_encrypted(encrypted, monkeypatch):
     """Hold the first real-client query at the simulated radio boundary."""
     entered = asyncio.Event()
