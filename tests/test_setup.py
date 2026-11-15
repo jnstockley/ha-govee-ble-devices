@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from govee_ble_client import build_packet
-from homeassistant.config_entries import ConfigEntryState
+from homeassistant.config_entries import ConfigEntries, ConfigEntryState
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -75,14 +75,17 @@ async def test_failed_first_refresh_retains_owner_and_retries_cleanup_before_set
 
 @pytest.mark.parametrize("foreign_owner", [False, True])
 async def test_removed_block_three_controls_are_cleaned_from_registry(
-    coordinator, foreign_owner
+    coordinator, foreign_owner, monkeypatch
 ):
     hass = coordinator.hass
     entry = coordinator.config_entry
     entry.data["model"] = "H7102"
     entry.disabled_by = None
     entry.pref_disable_new_entities = False
-    hass.config_entries = SimpleNamespace(async_get_entry=lambda entry_id: entry)
+    # Registry loading waits for config entries to finish initializing.
+    hass.config_entries = ConfigEntries(hass, {})
+    await hass.config_entries.async_initialize()
+    monkeypatch.setattr(hass.config_entries, "async_get_entry", lambda entry_id: entry)
     dr.async_setup(hass)
     await dr.async_load(hass)
     await er.async_load(hass)
@@ -133,6 +136,8 @@ async def test_custom_draft_loads_before_platforms_and_is_removed_with_entry(
     coordinator, radio, monkeypatch, invalid_storage
 ):
     hass = coordinator.hass
+    hass.config_entries = ConfigEntries(hass, {})
+    await hass.config_entries.async_initialize()
     dr.async_setup(hass)
     await dr.async_load(hass)
     await er.async_load(hass)
@@ -169,9 +174,9 @@ async def test_custom_draft_loads_before_platforms_and_is_removed_with_entry(
         )
         assert hass_entry.runtime_data.custom_editor.value(1, "mode") == "high"
 
-    hass.config_entries = SimpleNamespace(
-        async_forward_entry_setups=forward,
-        async_unload_platforms=AsyncMock(return_value=True),
+    monkeypatch.setattr(hass.config_entries, "async_forward_entry_setups", forward)
+    monkeypatch.setattr(
+        hass.config_entries, "async_unload_platforms", AsyncMock(return_value=True)
     )
     monkeypatch.setattr(
         component.bluetooth, "async_rediscover_address", lambda *_: None
