@@ -1,3 +1,4 @@
 {
-  "name": "Govee BLE Devices"
+  "name": "Govee BLE Devices",
+  "homeassistant": "2026.6.0"
 }
