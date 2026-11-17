@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+.venv-ha/bin/ruff check custom_components scripts tests
+.venv-ha/bin/ruff format --check custom_components scripts tests

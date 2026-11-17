@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+python3 -c 'import sys; assert sys.version_info[:2] == (3, 14), "Use Python 3.14 for the pinned Home Assistant environment"'
+if [[ ! -x .venv-ha/bin/python ]]; then
+    python3 -m venv .venv-ha
+fi
+.venv-ha/bin/python -m pip install -r requirements-test.txt
+.venv-ha/bin/python scripts/check_release.py --install-requirement
+.venv-ha/bin/python scripts/develop.py init "$@"

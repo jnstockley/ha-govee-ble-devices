@@ -184,7 +184,12 @@ not addresses or raw packets. Restore normal logging after reproduction.
 
 ## Development
 
-The integration is pure Python under `custom_components/govee_ble_devices`. With Python 3.14 in a virtual environment, install `python -m pip install -r requirements-test.txt`, then run:
+The integration is pure Python under `custom_components/govee_ble_devices`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and
+[CHANGELOG.md](CHANGELOG.md) for release highlights. With Python 3.14,
+`scripts/setup` prepares `.venv-ha` and a private `.ha-dev` configuration;
+`scripts/lint` checks Python style without modifying files. Alternatively, in
+your own virtual environment, install `python -m pip install -r requirements-test.txt`, then run:
 
 ```sh
 python scripts/check_release.py --install-requirement
@@ -210,22 +215,29 @@ Then, from the repository root, with `python3` pointing to Python 3.14:
 
 ```sh
 python3 --version
-python3 -m venv .venv-ha
-.venv-ha/bin/python -m pip install -r requirements-test.txt
-.venv-ha/bin/python scripts/check_release.py --install-requirement
-mkdir -p .ha-dev/custom_components
-cp -n dev/configuration.yaml .ha-dev/configuration.yaml
-ln -s ../../custom_components/govee_ble_devices .ha-dev/custom_components/govee_ble_devices
+scripts/setup
 ```
 
-The `ln` command is a one-time setup step; an existing link does not need replacing. The existing `.venv/` is independent of this environment. `.venv-ha/` and `.ha-dev/` are ignored by Git; the latter holds local credentials, configuration, logs, and the database. Keep it private. `dev/configuration.yaml` is the tracked seed; edit `.ha-dev/configuration.yaml` for local settings.
+Setup links the integration source and seeds `.ha-dev/configuration.yaml` only
+when missing. It refuses to replace an existing integration directory or a link
+to another checkout. Rerunning setup preserves your local configuration.
+The existing `.venv/` is independent of this environment. `.venv-ha/` and
+`.ha-dev/` are ignored by Git; the latter holds local credentials, configuration,
+logs, and the database. Keep it private. `dev/configuration.yaml` is the tracked
+seed; edit `.ha-dev/configuration.yaml` for local settings.
 
 Check configuration and start Home Assistant:
 
 ```sh
-.venv-ha/bin/hass --script check_config -c .ha-dev
-.venv-ha/bin/hass -c .ha-dev
+.venv-ha/bin/python scripts/develop.py check
+scripts/develop
 ```
+
+Use `--config /path/to/config` with both `scripts/setup` and `scripts/develop`
+to use a different private configuration directory. For an explicit local client
+override, run `scripts/setup --client /path/to/govee-ble-client`; this installs
+that checkout in editable mode after installing the manifest pin. Rerunning
+setup without `--client` restores the published pin.
 
 The first run downloads additional requirements for the enabled Home Assistant integrations and needs internet access. Open **http://localhost:8123**, create a local owner account, then go to **Settings → Devices & services → Add integration → Govee BLE Devices**. Choose a supported device within Bluetooth range of the Mac. With no device in range, the integration reports that no devices were found; it does not create simulated entities. The web server listens only on `127.0.0.1:8123`. The seed enables the frontend, integration configuration, API, history, and Bluetooth, without unrelated default integrations or automatic LAN proxy discovery.
 
@@ -239,7 +251,7 @@ If it is running in the background or that terminal is unavailable, find the pro
 lsof -nP -iTCP:8123 -sTCP:LISTEN
 ```
 
-Use the PID from that output in the commands below, replacing `12345` with the actual PID. Check that the command belongs to this checkout's `.venv-ha/bin/hass -c .ha-dev` instance before stopping it:
+Use the PID from that output in the commands below, replacing `12345` with the actual PID. Check that the command belongs to this checkout's `.venv-ha/bin/python -m homeassistant --config .../.ha-dev` instance before stopping it:
 
 ```sh
 ps -p 12345 -o command=
